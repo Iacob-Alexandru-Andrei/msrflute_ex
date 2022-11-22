@@ -4,3 +4,6 @@ doc/sphinx/_build
 testing/logs.txt
 testing/outputs
 testing/mockup
+scratch/*
+testing/data
+testing/models
