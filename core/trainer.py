@@ -4,23 +4,25 @@
 import logging
 import os
 import re
-import copy 
+import copy
 
 import numpy as np
 import torch
 import torch.nn as nn
 
 from core.metrics import Metrics
-from utils import \
-    get_lr, \
-    get_lr_all, \
-    make_optimizer, \
-    make_lr_scheduler, \
-    print_rank, \
-    torch_save, \
-    try_except_save, \
-    write_yaml
+from utils import (
+    get_lr,
+    get_lr_all,
+    make_optimizer,
+    make_lr_scheduler,
+    print_rank,
+    torch_save,
+    try_except_save,
+    write_yaml,
+)
 from utils.utils import to_device
+import time
 
 
 class TrainerBase:
@@ -48,7 +50,7 @@ class TrainerBase:
         max_grad_norm=None,
         ignore_subtask=True,
         model_type="LanguageModel",
-        decoder_config=None
+        decoder_config=None,
     ):
 
         self.model = model
@@ -59,11 +61,16 @@ class TrainerBase:
         self.decoder_config = decoder_config
 
         self.step = 0  # count how many batches are processed
-        self.ignore_subtask = ignore_subtask  # ignore subtasks even if there are multiple task branches
+        self.ignore_subtask = (
+            ignore_subtask  # ignore subtasks even if there are multiple task branches
+        )
 
     def epoch_boundary(self):
-        '''Check if we are at the end of any given epoch.'''
-        return self.step % len(self.train_dataloader.create_loader()) == 0 and self.step != 0
+        """Check if we are at the end of any given epoch."""
+        return (
+            self.step % len(self.train_dataloader.create_loader()) == 0
+            and self.step != 0
+        )
 
     def train_desired_samples(self, desired_max_samples, apply_privacy_metrics):
         pass
@@ -104,7 +111,7 @@ class ModelUpdater(TrainerBase):
         max_grad_norm,
         anneal_config,
         model_type="LanguageModel",
-        decoder_config=None
+        decoder_config=None,
     ):
         super().__init__(
             model=model,
@@ -112,11 +119,13 @@ class ModelUpdater(TrainerBase):
             optimizer=optimizer,
             max_grad_norm=max_grad_norm,
             model_type=model_type,
-            decoder_config=decoder_config
+            decoder_config=decoder_config,
         )
 
         self.val_dataloader = val_dataloader
-        self.annealing_type = anneal_config["type"] if anneal_config is not None else None
+        self.annealing_type = (
+            anneal_config["type"] if anneal_config is not None else None
+        )
         self.lr_scheduler = make_lr_scheduler(anneal_config, self.optimizer)
         self.ss_scheduler = ss_scheduler
 
@@ -125,8 +134,13 @@ class ModelUpdater(TrainerBase):
 
         # Apply gradient clipping
         if self.max_grad_norm is not None:
-            grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-            print_rank(f"clipped norm: {grad_norm} to {min(grad_norm,self.max_grad_norm)}", logging.DEBUG)
+            grad_norm = nn.utils.clip_grad_norm_(
+                self.model.parameters(), self.max_grad_norm
+            )
+            print_rank(
+                f"clipped norm: {grad_norm} to {min(grad_norm,self.max_grad_norm)}",
+                logging.DEBUG,
+            )
 
         # Do optimizer step
         self.optimizer.step()
@@ -137,16 +151,25 @@ class ModelUpdater(TrainerBase):
 
         val_loss = val_acc = None
         if force_run_val is True or self.annealing_type == "val_loss":
-            _, val_loss, val_acc = run_validation_generic(self.model, self.val_dataloader)
+            _, val_loss, val_acc = run_validation_generic(
+                self.model, self.val_dataloader
+            )
 
         # Do LR scheduling
-        print_rank(f"LR all: {list(get_lr_all(self.optimizer))}", loglevel=logging.DEBUG)
+        print_rank(
+            f"LR all: {list(get_lr_all(self.optimizer))}", loglevel=logging.DEBUG
+        )
         print_rank("LR BEFORE lr_scheduler step: {}".format(get_lr(self.optimizer)))
-        if self.annealing_type == "val_loss":
+        if self.lr_scheduler is None:
+            pass
+        elif self.annealing_type == "val_loss":
             self.lr_scheduler.step(val_loss)
         else:
             self.lr_scheduler.step()
-        print_rank("LR AFTER lr_scheduler step: {}".format(get_lr(self.optimizer)), loglevel=logging.DEBUG)
+        print_rank(
+            "LR AFTER lr_scheduler step: {}".format(get_lr(self.optimizer)),
+            loglevel=logging.DEBUG,
+        )
 
         return (val_loss, val_acc)
 
@@ -166,7 +189,7 @@ class ModelUpdater(TrainerBase):
             optimizer=self.optimizer,
             lr_scheduler=self.lr_scheduler,
             ss_scheduler=self.ss_scheduler,
-            token=token
+            token=token,
         )
 
     def load(self, save_path, update_lr_scheduler, update_ss_scheduler):
@@ -185,11 +208,19 @@ class ModelUpdater(TrainerBase):
                 self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
             anl_st_dict = checkpoint.get("lr_scheduler_state_dict")
-            if anl_st_dict and self.lr_scheduler is not None and update_lr_scheduler is True:
+            if (
+                anl_st_dict
+                and self.lr_scheduler is not None
+                and update_lr_scheduler is True
+            ):
                 self.lr_scheduler.load_state_dict(anl_st_dict)
 
             sss_st_dict = checkpoint.get("ss_scheduler_state_dict")
-            if sss_st_dict and self.ss_scheduler is not None and update_lr_scheduler is True:
+            if (
+                sss_st_dict
+                and self.ss_scheduler is not None
+                and update_lr_scheduler is True
+            ):
                 self.ss_scheduler.load_state_dict(sss_st_dict)
 
 
@@ -226,32 +257,36 @@ class Trainer(TrainerBase):
         max_grad_norm=None,
         anneal_config=None,
         num_skips_threshold=-1,
-        ignore_subtask=True
+        ignore_subtask=True,
     ):
         super().__init__(
             model=model,
             train_dataloader=train_dataloader,
             optimizer=optimizer,
             max_grad_norm=max_grad_norm,
-            ignore_subtask=ignore_subtask
+            ignore_subtask=ignore_subtask,
         )
 
-        self.server_replay_config=None
+        self.server_replay_config = None
         if server_replay_config is not None:
             self.server_replay_config = server_replay_config
 
-        self.anneal_config=None
+        self.anneal_config = None
         if anneal_config is not None:
             self.anneal_config = anneal_config
 
         self.lr_scheduler = None
-        if self.optimizer is None and self.server_replay_config is not None and "optimizer" in self.server_replay_config:
-            self.optimizer = make_optimizer(self.server_replay_config["optimizer_config"], model)
+        if (
+            self.optimizer is None
+            and self.server_replay_config is not None
+            and "optimizer" in self.server_replay_config
+        ):
+            self.optimizer = make_optimizer(
+                self.server_replay_config["optimizer_config"], model
+            )
 
         if self.optimizer is not None and self.anneal_config is not None:
-            self.lr_scheduler = make_lr_scheduler(
-                                                self.anneal_config,
-                                                self.optimizer)
+            self.lr_scheduler = make_lr_scheduler(self.anneal_config, self.optimizer)
 
         self.cached_batches = []
         self.ss_scheduler = ss_scheduler
@@ -276,14 +311,16 @@ class Trainer(TrainerBase):
 
             grad = p.grad.detach().clone().cpu().numpy()
             p1 = np.sum(grad)
-            p2 = np.sum(grad ** 2)
+            p2 = np.sum(grad**2)
             n = p.grad.numel()
 
             self.sum_grad += p1
             self.sum_grad2 += p2
             self.counter += n
 
-        print_rank("Magn. Grad. Squared: {}".format(self.sum_grad2), loglevel=logging.DEBUG)
+        print_rank(
+            "Magn. Grad. Squared: {}".format(self.sum_grad2), loglevel=logging.DEBUG
+        )
         print_rank("Magn. Grad.: {}".format(self.sum_grad), loglevel=logging.DEBUG)
         return self.sum_grad, self.sum_grad2, self.counter
 
@@ -304,10 +341,12 @@ class Trainer(TrainerBase):
             "var": var_grad,
             "mean": mean_grad,
             "mag": mag_grad,
-            "norm": norm_grad
+            "norm": norm_grad,
         }
 
-    def train_desired_samples(self, desired_max_samples=None, apply_privacy_metrics=False):
+    def train_desired_samples(
+        self, desired_max_samples=None, apply_privacy_metrics=False
+    ):
         """Triggers training step.
 
         Args:
@@ -321,14 +360,21 @@ class Trainer(TrainerBase):
         num_samples = 0
         total_train_loss = 0
 
-        num_samples_per_epoch, train_loss_per_epoch = self.run_train_epoch(desired_max_samples, apply_privacy_metrics)
+        num_samples_per_epoch, train_loss_per_epoch = self.run_train_epoch(
+            desired_max_samples, apply_privacy_metrics
+        )
 
         num_samples += num_samples_per_epoch
         total_train_loss += train_loss_per_epoch
 
         return total_train_loss, num_samples
 
-    def run_train_epoch(self, desired_max_samples=None, apply_privacy_metrics=False):
+    def run_train_epoch(
+        self,
+        desired_max_samples=None,
+        apply_privacy_metrics=False,
+        task="google_speech_4_A40_44_cpu_fast_agg",
+    ):
         """Implementation example for training the model.
 
         The training process should stop after the desired number of samples is processed.
@@ -349,6 +395,8 @@ class Trainer(TrainerBase):
         self.model.zero_grad()
 
         train_loader = self.train_dataloader.create_loader()
+        self_batch_cnt = 0
+        client_begin = time.time()
         for batch in train_loader:
             if desired_max_samples is not None and num_samples >= desired_max_samples:
                 break
@@ -371,7 +419,9 @@ class Trainer(TrainerBase):
 
             # Apply gradient clipping
             if self.max_grad_norm is not None:
-                grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                grad_norm = nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.max_grad_norm
+                )
 
             # Sum up the gradient power
             self.estimate_sufficient_stats()
@@ -380,7 +430,10 @@ class Trainer(TrainerBase):
             if self.optimizer is not None:
                 self.optimizer.step()
 
-            print_rank("step: {}, loss: {}".format(self.step, loss.item()), loglevel=logging.DEBUG)
+            print_rank(
+                "step: {}, loss: {}".format(self.step, loss.item()),
+                loglevel=logging.DEBUG,
+            )
 
             # Post-processing in this loop
             # Sum up the loss
@@ -388,7 +441,9 @@ class Trainer(TrainerBase):
 
             # Increment the number of frames processed already
             if "attention_mask" in batch:
-                num_samples += torch.sum(batch["attention_mask"].detach().cpu() == 1).item()
+                num_samples += torch.sum(
+                    batch["attention_mask"].detach().cpu() == 1
+                ).item()
             elif "total_frames" in batch:
                 num_samples += batch["total_frames"]
             else:
@@ -396,6 +451,23 @@ class Trainer(TrainerBase):
 
             # Update the counters
             self.step += 1
+            self_batch_cnt += 1
+
+        client_end = time.time()
+
+        # ====== Saving training time =====
+        # NOTE: `n_batches` and `n_samples` refers to the local dataset of client with id `client_id`
+        filename = os.path.join(".", f"{task}_record_clients.csv")
+        if os.path.exists(filename):
+            with open(filename, "a") as out:
+                out.write(
+                    f"{-1},{client_end - client_begin},{num_samples},{int(num_samples/20)}\n"
+                )
+        else:
+            with open(filename, "x") as out:
+                out.write(
+                    f"client_id,training_time,n_samples,n_batches\n{-1},{client_end - client_begin},{num_samples},{int(num_samples/20)}\n"
+                )
 
         # Take a step in lr_scheduler
         if self.lr_scheduler is not None:
@@ -413,14 +485,27 @@ class Trainer(TrainerBase):
             self.model.load_state_dict(model.state_dict())
 
             self.lr_scheduler = None
-            if self.optimizer is None and self.server_replay_config is not None and \
-                    "optimizer_config" in self.server_replay_config:
-                print_rank("Creating server-side replay training optimizer", loglevel=logging.DEBUG)
-                self.optimizer = make_optimizer(self.server_replay_config["optimizer_config"], self.model)
+            if (
+                self.optimizer is None
+                and self.server_replay_config is not None
+                and "optimizer_config" in self.server_replay_config
+            ):
+                print_rank(
+                    "Creating server-side replay training optimizer",
+                    loglevel=logging.DEBUG,
+                )
+                self.optimizer = make_optimizer(
+                    self.server_replay_config["optimizer_config"], self.model
+                )
 
             if self.optimizer is not None and self.anneal_config is not None:
-                print_rank("Creating server-side replay-training lr_scheduler", loglevel=logging.DEBUG)
-                self.lr_scheduler = make_lr_scheduler(self.anneal_config, self.optimizer)
+                print_rank(
+                    "Creating server-side replay-training lr_scheduler",
+                    loglevel=logging.DEBUG,
+                )
+                self.lr_scheduler = make_lr_scheduler(
+                    self.anneal_config, self.optimizer
+                )
 
     def reset_optimizer(self, optimizer_state_dict, annealing_config=None):
         """Re-load optimizer."""
@@ -445,7 +530,7 @@ class Trainer(TrainerBase):
             optimizer=self.optimizer,
             lr_scheduler=self.lr_scheduler,
             ss_scheduler=self.ss_scheduler,
-            token=token
+            token=token,
         )
 
     def load(self, save_path, update_lr_scheduler, update_ss_scheduler):
@@ -464,11 +549,19 @@ class Trainer(TrainerBase):
                 self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
             anl_st_dict = checkpoint.get("lr_scheduler_state_dict")
-            if anl_st_dict and self.lr_scheduler is not None and update_lr_scheduler is True:
+            if (
+                anl_st_dict
+                and self.lr_scheduler is not None
+                and update_lr_scheduler is True
+            ):
                 self.lr_scheduler.load_state_dict(anl_st_dict)
 
             sss_st_dict = checkpoint.get("ss_scheduler_state_dict")
-            if sss_st_dict and self.ss_scheduler is not None and update_lr_scheduler is True:
+            if (
+                sss_st_dict
+                and self.ss_scheduler is not None
+                and update_lr_scheduler is True
+            ):
                 self.ss_scheduler.load_state_dict(sss_st_dict)
 
 
@@ -490,22 +583,23 @@ def run_validation_generic(model, val_dataloader):
     # Initialize dataloader etc.
     val_loader = val_dataloader.create_loader()
     print_rank(
-        f"created loader {val_loader.num_workers}, " + \
-        f"users: {len(val_dataloader.dataset.user_list)} " + \
-        f"examples: {sum(val_dataloader.dataset.num_samples)} " + \
-        f"lendata: {len(val_loader)} ",
-        loglevel=logging.DEBUG
+        f"created loader {val_loader.num_workers}, "
+        + f"users: {len(val_dataloader.dataset.user_list)} "
+        + f"examples: {sum(val_dataloader.dataset.num_samples)} "
+        + f"lendata: {len(val_loader)} ",
+        loglevel=logging.DEBUG,
     )
 
     print_rank(
-        f"drop_last: {val_loader.drop_last} " + \
-        f"len_sampler: {len(val_loader._index_sampler)}",
-        loglevel=logging.DEBUG
+        f"drop_last: {val_loader.drop_last} "
+        + f"len_sampler: {len(val_loader._index_sampler)}",
+        loglevel=logging.DEBUG,
     )
 
     print_rank("Loading metrics ...")
     metrics_cl = Metrics()
     return metrics_cl.compute_metrics(dataloader=val_loader, model=model)
+
 
 def set_component_wise_lr(model, optimizer_config, updatable_names):
     """Set zero learning rate for layers in order to freeze the update.
@@ -528,20 +622,27 @@ def set_component_wise_lr(model, optimizer_config, updatable_names):
     for name, params in model.named_parameters():
         if name_matched(name, updatable_names) is True:
             print_rank("updating {} with lr = {}".format(name, optimizer_config["lr"]))
-            parameters.append({"params": params, "lr":optimizer_config["lr"]})
+            parameters.append({"params": params, "lr": optimizer_config["lr"]})
         else:
             print_rank("freezing {}".format(name))
             parameters.append({"params": params, "lr": 0.0})
 
     return parameters
 
-def save_model(model_path, config, model, optimizer, lr_scheduler, ss_scheduler, token=None):
+
+def save_model(
+    model_path, config, model, optimizer, lr_scheduler, ss_scheduler, token=None
+):
     """Save a model as well as training information."""
 
     save_state = {
         "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict() if optimizer is not None else None,
-        "lr_scheduler_state_dict": lr_scheduler.state_dict() if lr_scheduler is not None else None
+        "optimizer_state_dict": optimizer.state_dict()
+        if optimizer is not None
+        else None,
+        "lr_scheduler_state_dict": lr_scheduler.state_dict()
+        if lr_scheduler is not None
+        else None,
     }
     if ss_scheduler is not None:
         save_state["ss_scheduler_state_dict"] = ss_scheduler.state_dict()
@@ -556,5 +657,6 @@ def save_model(model_path, config, model, optimizer, lr_scheduler, ss_scheduler,
 
     # Write out the config to model_dir
     if config is not None:
-        try_except_save(write_yaml, config=config,
-                save_path=os.path.join(model_path, "config.yaml"))
+        try_except_save(
+            write_yaml, config=config, save_path=os.path.join(model_path, "config.yaml")
+        )

@@ -29,6 +29,7 @@ import os
 # TODO: not all pytorch optimizers can handle amsgrad - we should
 # have distinct subclasses for the different optimizers
 
+
 def from_dict(cls, config):
     """
     Helper function to convert a dict to a class
@@ -38,6 +39,7 @@ def from_dict(cls, config):
 
 class Config(MutableMapping):
     """Base class for configuration classes."""
+
     def get(self, k: str, default=None):
         result = getattr(self, k, default)
         if result is None:
@@ -45,12 +47,12 @@ class Config(MutableMapping):
         return result
 
     def lookup(self, s: str, default=None):
-        toks = s.split('.')
+        toks = s.split(".")
         child = getattr(self, toks[0], default)
         if len(toks) == 1:
             return child if child is not None else default
         elif isinstance(child, Config):
-            return child.lookup('.'.join(toks[1:]), default)
+            return child.lookup(".".join(toks[1:]), default)
         else:
             return default
 
@@ -83,28 +85,32 @@ class Config(MutableMapping):
 class ModelConfig(Config):
     """Base class for Model configurations
 
-The model configuration specifies model architecture, parameters, and initialization settings.
+    The model configuration specifies model architecture, parameters, and initialization settings.
 
-Attributes:
-    model_type (str): The class name of the model to instantiate. eg GRU.
+    Attributes:
+        model_type (str): The class name of the model to instantiate. eg GRU.
 
-    model_folder (str): The relative path to the model.py file where model_type is defined. eg experiments/nlg_gru/model.py
+        model_folder (str): The relative path to the model.py file where model_type is defined. eg experiments/nlg_gru/model.py
 
-    pretrained_model_path (str): The path to the pretrained model.  If None, the model will be randomly initialized using the method defined in weight_init.
+        pretrained_model_path (str): The path to the pretrained model.  If None, the model will be randomly initialized using the method defined in weight_init.
+    """
 
-"""
     model_type: str = None
     model_folder: str = None
     pretrained_model_path: str = None
+    data_loc: str | None = None
+    model_str: str | None = None
+    model_setup_config: str | None = None
+    mlm_probability: float | None = None
 
     @staticmethod
     def from_dict(config) -> ModelConfig:
-        """Searches the model folder for config.py and if it is found the model config 
+        """Searches the model folder for config.py and if it is found the model config
         is initialized from the class [model_type]Config"""
-        cfg_path = os.path.dirname("./" + str(config['model_folder'])) + '/config.py'
+        cfg_path = os.path.dirname("./" + str(config["model_folder"])) + "/config.py"
         if os.path.exists(cfg_path):
-            loader = SourceFileLoader('config', cfg_path).load_module()
-            config_class = config['model_type'] + 'Config'
+            loader = SourceFileLoader("config", cfg_path).load_module()
+            config_class = config["model_type"] + "Config"
             try:
                 config_type = getattr(loader, config_class)
                 return from_dict(config_type, config)
@@ -112,44 +118,47 @@ Attributes:
                 print_rank(f"Config class {config_class} not found in {cfg_path}")
                 raise
         else:
-            print_rank(f"Warning: couldn't find {cfg_path}, falling back to dictionary.")
+            print_rank(
+                f"Warning: couldn't find {cfg_path}, falling back to dictionary."
+            )
             return config
-            
+
 
 @dataclass
 class BERTModelConfig(Config):
     """BERT model configuration
 
-The BERT configuration specifies huggingface-specific BERT model settings.
+    The BERT configuration specifies huggingface-specific BERT model settings.
 
-Attributes:
-    model_name (str): The name of the BERT model.  eg bert-base-uncased.
+    Attributes:
+        model_name (str): The name of the BERT model.  eg bert-base-uncased.
 
-    cache_dir (str): Tokenizer cache directory, will be created if it doesn't exist.
+        cache_dir (str): Tokenizer cache directory, will be created if it doesn't exist.
 
-    use_fast_tokenizer (bool): Whether to use the fast tokenizer.
+        use_fast_tokenizer (bool): Whether to use the fast tokenizer.
 
-    mask_token (str): special token to use for masking.
+        mask_token (str): special token to use for masking.
 
-    task (str): The task to use for BERT.  eg mlm.
+        task (str): The task to use for BERT.  eg mlm.
 
-    past_index (int): The index of the past state in the BERT model's state dict.
+        past_index (int): The index of the past state in the BERT model's state dict.
 
-    prediction_loss_only (bool): if False, also produce metrics for predictions and labels.
+        prediction_loss_only (bool): if False, also produce metrics for predictions and labels.
 
-    process_line_by_line (bool): if True, process the input line-by-line.
+        process_line_by_line (bool): if True, process the input line-by-line.
 
-ToDo:
-    * check how cache_dir is used- there's a risk of multiple processes reading/writing at the same time.
-    * verify the meaning of past_index (thanks copilot)
-    * document the difference when process_line_by_line is True vs False
+    ToDo:
+        * check how cache_dir is used- there's a risk of multiple processes reading/writing at the same time.
+        * verify the meaning of past_index (thanks copilot)
+        * document the difference when process_line_by_line is True vs False
 
     """
+
     model_name: str = None
     cache_dir: str = None
     use_fast_tokenizer: bool = False
-    mask_token: str = '<mask>'
-    task: str = 'mlm'
+    mask_token: str = "<mask>"
+    task: str = "mlm"
     past_index: int | None = -2
     prediction_loss_only: bool = False
     process_line_by_line: bool = False
@@ -174,6 +183,7 @@ class BERTTrainingConfig(Config):
 
         max_seq_length (int): maximum input sequence length.
     """
+
     seed: int | None = None
     label_smoothing_factor: float | None = None
     batch_size: int | None = None
@@ -196,6 +206,7 @@ class BERTConfig(Config):
 
         training (BERTTrainingConfig): BERT training configuration.
     """
+
     loader_type: str = None
     model: BERTModelConfig = None
     training: BERTTrainingConfig = None
@@ -204,9 +215,9 @@ class BERTConfig(Config):
     def from_dict(config) -> BERTConfig:
         result = BERTConfig()
         for k in config:
-            if k == 'model':
+            if k == "model":
                 result.model = BERTModelConfig.from_dict(config[k])
-            elif k == 'training':
+            elif k == "training":
                 result.training = BERTTrainingConfig.from_dict(config[k])
             else:
                 setattr(result, k, config[k])
@@ -265,6 +276,7 @@ class PrivacyConfig(Config):
         min_weight (float): the minimum per-gradient aggregation weight.
 
     """
+
     enable_local_dp: bool = False
     enable_global_dp: bool = False
     eps: float | None = None
@@ -304,6 +316,7 @@ class PrivacyMetricsConfig(Config):
 
         attacker_optimizer_config (OptimizerConfig): the optimizer configuration for the reconstruction attack.
     """
+
     apply_metrics: bool = False
     apply_indices_extraction: bool = False
     allowed_word_rank: int | None = None
@@ -318,9 +331,8 @@ class PrivacyMetricsConfig(Config):
     def from_dict(config) -> PrivacyMetricsConfig:
         result = PrivacyMetricsConfig()
         for k in config:
-            if k == 'attacker_optimizer_config':
-                result.attacker_optimizer_config = \
-                    OptimizerConfig.from_dict(config[k])
+            if k == "attacker_optimizer_config":
+                result.attacker_optimizer_config = OptimizerConfig.from_dict(config[k])
             else:
                 setattr(result, k, config[k])
         return result
@@ -334,6 +346,7 @@ class OptimizerConfig(Config):
     a `type` field which indicates the pytorch optimizer type that should be invoked.
     This will be stripped from the object before being passed to the Optimizer's init.
     """
+
     type: str = None
     # Leave this open for any keyword arguments, so we don't break torch constructors
     # In the future we can limit keywords to torch-specific ones.
@@ -345,7 +358,7 @@ class OptimizerConfig(Config):
     def from_dict(config) -> OptimizerConfig:
         # needs its own from_dict so we can accomodate any fields
         result = OptimizerConfig()
-        assert 'type' in config
+        assert "type" in config
         for k in config:
             setattr(result, k, config[k])
         return result
@@ -365,6 +378,7 @@ class AnnealingConfig(Config):
 
         step_size (int): the interval between annealing operations.
     """
+
     type: str = None
     step_interval: str = None
     gamma: float | None = None
@@ -383,6 +397,9 @@ class DatasetConfig(Config):
     prepend_datapath: bool = False
     num_workers: int | None = None
     desired_max_samples: int | None = None
+    filter_less: int | None = None
+    filter_more: int | None = None
+    data_loc: str | None = None
 
     # Common to all client.train dataloaders
     list_of_train_data: str = None
@@ -402,7 +419,9 @@ class DatasetConfig(Config):
     tokenizer_type: str = None  # Note tokenizer_type appears in NLG configs, but always set to 'not applicable'
     vocab_dict: str = None
     pin_memory: bool = False
-    num_frames: int | None = None  # num_frames is missing from NLG server.test dataloader
+    num_frames: int | None = (
+        None  # num_frames is missing from NLG server.test dataloader
+    )
     max_batch_size: int | None = None
     max_num_words: int | None = None
     unsorted_batch: int | None = None
@@ -417,6 +436,11 @@ class DatasetConfig(Config):
     max_samples_per_user: int | None = None
     mask_token: str = None
     cache_dir: str = None
+
+    # Common to fedscale reddit
+    model: str | None = None
+    overwrite_cache: str | None = None
+    block_size: str | None = None
 
     @staticmethod
     def from_dict(config) -> DatasetConfig:
@@ -439,19 +463,18 @@ class DataConfig(Config):
 
         test (DatasetConfig): the test dataset configuration.
     """
+
     train: DatasetConfig = None
     val: DatasetConfig = None
     test: DatasetConfig = None
 
     @staticmethod
     def from_dict(config) -> DataConfig:
-        train = DatasetConfig.from_dict(config['train']) if 'train' in config else None
-        val = DatasetConfig.from_dict(config['val']) if 'val' in config else None
-        test = DatasetConfig.from_dict(config['test']) if 'test' in config else None
+        train = DatasetConfig.from_dict(config["train"]) if "train" in config else None
+        val = DatasetConfig.from_dict(config["val"]) if "val" in config else None
+        test = DatasetConfig.from_dict(config["test"]) if "test" in config else None
 
-        return DataConfig(
-            train, val, test
-        )
+        return DataConfig(train, val, test)
 
 
 @dataclass
@@ -465,14 +488,15 @@ class ServerReplayConfig(Config):
 
         optimizer_config (OptimizerConfig): the optimizer configuration to use for the server.
     """
+
     server_iterations: int
     optimizer_config: OptimizerConfig
 
     @staticmethod
     def from_dict(config) -> ServerReplayConfig:
         return ServerReplayConfig(
-            config['server_iterations'],
-            OptimizerConfig.from_dict(config['optimizer_config'])
+            config["server_iterations"],
+            OptimizerConfig.from_dict(config["optimizer_config"]),
         )
 
 
@@ -511,6 +535,7 @@ class RLConfig(Config):
 
 
     """
+
     marginal_update_RL: bool = False
     RL_path: str = None
     RL_path_global: bool = False
@@ -529,9 +554,9 @@ class RLConfig(Config):
     def from_dict(config) -> RLConfig:
         result = RLConfig()
         for k in config:
-            if k == 'optimizer_config':
+            if k == "optimizer_config":
                 result.optimizer_config = OptimizerConfig.from_dict(config[k])
-            elif k == 'annealing_config':
+            elif k == "annealing_config":
                 result.annealing_config = AnnealingConfig.from_dict(config[k])
             else:
                 setattr(result, k, config[k])
@@ -598,6 +623,8 @@ class ServerConfig(Config):
         server_replay_config (ServerReplayConfig): the server replay configuration to use for any server-side training.
 
     """
+
+    task: str | None = None
     resume_from_checkpoint: bool = False
     max_iteration: int | None = None
     num_clients_per_iteration: int | None = None
@@ -617,29 +644,25 @@ class ServerConfig(Config):
     max_weight: float | None = None
     initial_lr_client: float | None = None
     lr_delay_factor: float | None = None
-    best_model_criterion: str = 'loss'
+    best_model_criterion: str = "loss"
     server_replay_config: ServerReplayConfig = None
+    fast_aggregation: bool = False
 
     @staticmethod
     def from_dict(config) -> ServerConfig:
         result = ServerConfig()
 
         for k in config:
-            if k == 'optimizer_config':
-                result.optimizer_config = \
-                    OptimizerConfig.from_dict(config[k])
-            elif k == 'annealing_config':
-                result.annealing_config = \
-                    AnnealingConfig.from_dict(config[k])
-            elif k == 'data_config':
-                result.data_config = \
-                    DataConfig.from_dict(config[k])
-            elif k == 'server_replay_config':
-                result.server_replay_config = \
-                    ServerReplayConfig.from_dict(config[k])
-            elif k == 'RL':
-                result.RL = \
-                    RLConfig.from_dict(config[k])
+            if k == "optimizer_config":
+                result.optimizer_config = OptimizerConfig.from_dict(config[k])
+            elif k == "annealing_config":
+                result.annealing_config = AnnealingConfig.from_dict(config[k])
+            elif k == "data_config":
+                result.data_config = DataConfig.from_dict(config[k])
+            elif k == "server_replay_config":
+                result.server_replay_config = ServerReplayConfig.from_dict(config[k])
+            elif k == "RL":
+                result.RL = RLConfig.from_dict(config[k])
             else:
                 setattr(result, k, config[k])
         return result
@@ -675,6 +698,7 @@ class ClientConfig(Config):
 
         annealing_config (AnnealingConfig): the learning rate annealing configuration to use client-side.
     """
+
     meta_learning: str = None
     stats_on_smooth_grad: bool = False
     ignore_subtask: bool = False
@@ -691,17 +715,14 @@ class ClientConfig(Config):
     def from_dict(config) -> ClientConfig:
         result = ClientConfig()
         for k in config:
-            if k == 'data_config':
+            if k == "data_config":
                 result.data_config = DataConfig.from_dict(config[k])
-            elif k == 'meta_optimizer_config':
-                result.meta_optimizer_config = \
-                    OptimizerConfig.from_dict(config[k])
-            elif k == 'optimizer_config':
-                result.optimizer_config = \
-                    OptimizerConfig.from_dict(config[k])
-            elif k == 'annealing_config':
-                result.annealing_config = \
-                    AnnealingConfig.from_dict(config[k])
+            elif k == "meta_optimizer_config":
+                result.meta_optimizer_config = OptimizerConfig.from_dict(config[k])
+            elif k == "optimizer_config":
+                result.optimizer_config = OptimizerConfig.from_dict(config[k])
+            elif k == "annealing_config":
+                result.annealing_config = AnnealingConfig.from_dict(config[k])
             else:
                 setattr(result, k, config[k])
         return result
@@ -724,6 +745,7 @@ class FLUTEConfig(Config):
         client_config (ClientConfig): the client configuration to use.
 
     """
+
     model_config: ModelConfig = None
     dp_config: PrivacyConfig = None
     privacy_metrics_config: PrivacyMetricsConfig = None
@@ -736,59 +758,97 @@ class FLUTEConfig(Config):
         # Join paths in config file
         if config["server_config"]["wantRL"]:
             rl_path = config["server_config"]["RL"]["RL_path"]
-            rl_path = os.path.join(config["output_path"],rl_path) if config["server_config"]["RL"].get("RL_path_global", True) \
-                                                            else os.path.join(config["output_path"], config["experiment_name"],rl_path)
+            rl_path = (
+                os.path.join(config["output_path"], rl_path)
+                if config["server_config"]["RL"].get("RL_path_global", True)
+                else os.path.join(
+                    config["output_path"], config["experiment_name"], rl_path
+                )
+            )
 
         if "pretrained_model_path" in config["model_config"]:
-            config["model_config"]["pretrained_model_path"] = os.path.join(config["data_path"], config["model_config"]["pretrained_model_path"])
+            config["model_config"]["pretrained_model_path"] = os.path.join(
+                config["data_path"], config["model_config"]["pretrained_model_path"]
+            )
 
         for section in ["server_config", "client_config"]:
-            for mode in ['test','val','train']:
-                if mode in config[section]["data_config"] and "vocab_dict" in config[section]["data_config"][mode]:
-                    config[section]["data_config"][mode]["vocab_dict"] = os.path.join(config['data_path'], config[section]["data_config"][mode]["vocab_dict"])
-                
+            for mode in ["test", "val", "train"]:
+                if (
+                    mode in config[section]["data_config"]
+                    and "vocab_dict" in config[section]["data_config"][mode]
+                ):
+                    config[section]["data_config"][mode]["vocab_dict"] = os.path.join(
+                        config["data_path"],
+                        config[section]["data_config"][mode]["vocab_dict"],
+                    )
+
                 # TODO: Remove BERT specific parameters
-                if 'BERT' in config['model_config']:
-                    if mode!= 'train':
-                        config['server_config']['data_config'][mode]['model_name_or_path'] = config['model_config']['BERT']['model']['model_name']
-                        config['server_config']['data_config'][mode]['process_line_by_line'] = config['model_config']['BERT']['model']['process_line_by_line']
+                if "BERT" in config["model_config"]:
+                    if mode != "train":
+                        config["server_config"]["data_config"][mode][
+                            "model_name_or_path"
+                        ] = config["model_config"]["BERT"]["model"]["model_name"]
+                        config["server_config"]["data_config"][mode][
+                            "process_line_by_line"
+                        ] = config["model_config"]["BERT"]["model"][
+                            "process_line_by_line"
+                        ]
                     else:
-                        config['client_config']['data_config'][mode]['model_name_or_path'] = config['model_config']['BERT']['model']['model_name']
-                        config['client_config']['data_config'][mode]['process_line_by_line'] = config['model_config']['BERT']['model']['process_line_by_line']
+                        config["client_config"]["data_config"][mode][
+                            "model_name_or_path"
+                        ] = config["model_config"]["BERT"]["model"]["model_name"]
+                        config["client_config"]["data_config"][mode][
+                            "process_line_by_line"
+                        ] = config["model_config"]["BERT"]["model"][
+                            "process_line_by_line"
+                        ]
         return config
 
     @staticmethod
     def from_dict(config) -> FLUTEConfig:
 
         # Validate schema in config file
-        schema = eval(open('./core/schema.py', 'r').read())
+        schema = eval(open("./core/schema.py", "r").read())
         v = Validator(schema)
-        if not v.validate(config,schema):
-            raise ValueError('Missing {} argumment in config file '.format(v.errors))
-        
+        if not v.validate(config, schema):
+            raise ValueError("Missing {} argumment in config file ".format(v.errors))
+
         # Normalize default values
         original_config = config
         config = v.normalized(config)
 
-        for section in ['server_config', 'client_config']:
-            for mode in config[section]['data_config'].keys():
-                diff = config[section]['data_config'][mode].keys() - original_config[section]['data_config'][mode].keys()
+        for section in ["server_config", "client_config"]:
+            for mode in config[section]["data_config"].keys():
+                diff = (
+                    config[section]["data_config"][mode].keys()
+                    - original_config[section]["data_config"][mode].keys()
+                )
                 if len(diff) > 0:
-                    print_rank("Assigning default values for: {} in [{}][{}][data_config]".format(diff, section, mode))
-        
-        dp_config = \
-            PrivacyConfig.from_dict(config['dp_config']) \
-            if 'dp_config' in config else None
+                    print_rank(
+                        "Assigning default values for: {} in [{}][{}][data_config]".format(
+                            diff, section, mode
+                        )
+                    )
 
-        priv_metrics_config = \
-            PrivacyMetricsConfig.from_dict(config['privacy_metrics_config']) \
-            if 'privacy_metrics_config' in config else None
+        dp_config = (
+            PrivacyConfig.from_dict(config["dp_config"])
+            if "dp_config" in config
+            else None
+        )
 
-        strategy = config.get('strategy', 'DGA')
+        priv_metrics_config = (
+            PrivacyMetricsConfig.from_dict(config["privacy_metrics_config"])
+            if "privacy_metrics_config" in config
+            else None
+        )
+
+        strategy = config.get("strategy", "DGA")
 
         return FLUTEConfig(
-            ModelConfig.from_dict(config['model_config']),
-            dp_config, priv_metrics_config, strategy,
-            ServerConfig.from_dict(config['server_config']),
-            ClientConfig.from_dict(config['client_config'])
+            ModelConfig.from_dict(config["model_config"]),
+            dp_config,
+            priv_metrics_config,
+            strategy,
+            ServerConfig.from_dict(config["server_config"]),
+            ClientConfig.from_dict(config["client_config"]),
         )

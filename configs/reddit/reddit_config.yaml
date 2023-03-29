@@ -1,17 +1,18 @@
+# New setup section to avoid having to rewrite the entire it entirely
 setup:
     outputPath: "scratch"
     dataPath: "./testing"
     task: "nlg_gru"
     backend: "gloo"
-    num_skip_decoding: Null
-    local_rank: Null
-  
+    num_skip_decoding: None
+    local_rank: None
+
 
 # Basic configuration file for running nlg_gru example using json files.
 # Parameters needed to initialize the model
 model_config: 
     model_type: GRU
-    model_folder: experiments/nlg_gru/model.py
+    model_folder: experiments/reddit/model.py
     pretrained_model_path: <add path to pretrained weights here>
     embed_dim: 160
     vocab_size: 10000
@@ -44,7 +45,7 @@ privacy_metrics_config:
     #     amsgrad: false
 
 # Select the Federated optimizer to use (e.g. DGA or FedAvg)
-strategy: DGA
+strategy: FedAvg
 
 # Determines all the server-side settings for training and evaluation rounds
 server_config:   
@@ -64,11 +65,11 @@ server_config:
     rec_freq: 4                     # Frequency for testing rounds
     initial_val : true              # Enable initial validation round at itr=0
     initial_rec: false             # Enable initial testing round at itr=0
-    max_iteration: 11               # Total number of rounds for FL
-    num_clients_per_iteration: 10   # Number of clients sampled per round
+    max_iteration: 100               # Total number of rounds for FL
+    num_clients_per_iteration: 100   # Number of clients sampled per round
     data_config:                    # Server-side data configuration
         val:                        # Validation data
-            batch_size: 2048
+            batch_size: 20
             tokenizer_type: not_applicable
             prepend_datapath: false
             val_data: <add path to data here>       # Path for validation data
@@ -99,7 +100,7 @@ server_config:
         #     max_num_words:  25
         #     unsorted_batch: true
         test:                                       # Test data configuration
-            batch_size: 2048
+            batch_size: 20
             tokenizer_type: not_applicable
             prepend_datapath: false
             train_data: null
@@ -136,7 +137,7 @@ client_config:
     do_profiling: false                                 # Enables client-side training profiling
     data_config:
         train:                                          # This is the main training data configuration
-            batch_size: 64
+            batch_size: 20
             tokenizer_type: not_applicable
             prepend_datapath: false
             list_of_train_data: <add path to data here> # Path to training data
@@ -145,7 +146,7 @@ client_config:
             num_workers: 0
             desired_max_samples: 50000
             max_grad_norm: 20.0
-            max_batch_size: 128
+            max_batch_size: 20
             max_num_words:  25
             unsorted_batch: true
     type: optimization

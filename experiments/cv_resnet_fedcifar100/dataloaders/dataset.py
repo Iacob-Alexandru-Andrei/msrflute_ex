@@ -25,7 +25,6 @@ class Dataset(BaseDataset):
             else:  # get a single user's data
                 if user_idx is None:
                     raise ValueError('in train mode, user_idx must be specified')
-
                 self.user = self.user_list[user_idx]
                 self.features = self.user_data[self.user]
                 self.labels = self.user_data_label[self.user]

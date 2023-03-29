@@ -19,10 +19,21 @@ from utils.optimizers.lars import LarsSGD
 from utils.optimizers.lamb import LAMB
 from utils.optimizers.adamW import AdamW
 from easydict import EasyDict as edict
-from torch.optim.lr_scheduler import (
-    StepLR, 
-    MultiStepLR, 
-    ReduceLROnPlateau )
+from torch.optim.lr_scheduler import StepLR, MultiStepLR, ReduceLROnPlateau
+
+from transformers import AlbertTokenizer
+
+
+def get_tokenizer(model):
+    try:
+        to_ret = get_tokenizer.tokenizer
+        return to_ret
+    except AttributeError:
+        get_tokenizer.tokenizer = AlbertTokenizer.from_pretrained(
+            model, do_lower_case=True
+        )
+        return get_tokenizer.tokenizer
+
 
 def make_optimizer(optimizer_config, model):
     """Initialization for optimizer."""
@@ -36,6 +47,33 @@ def make_optimizer(optimizer_config, model):
         tmp_config.pop("type", None)
         return torch.optim.Adam(model.parameters(), **tmp_config)
 
+    elif optimizer_config["type"] == "fedscale_adam":
+        tmp_config.pop("type", None)
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if not any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": tmp_config["weight_decay"],
+            },
+            {
+                "params": [
+                    p
+                    for n, p in model.named_parameters()
+                    if any(nd in n for nd in no_decay)
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+        # Bert pre-training setup
+        optimizer = torch.optim.Adam(
+            optimizer_grouped_parameters, weight_decay=1e-2, **tmp_config
+        )
+        return optimizer
+
     elif optimizer_config["type"] == "adamax":
         tmp_config.pop("type", None)
         tmp_config.pop("amsgrad", None)
@@ -44,12 +82,13 @@ def make_optimizer(optimizer_config, model):
     elif optimizer_config["type"] == "lars":
         tmp_config.pop("type", None)
         from torchlars import LARS
+
         base_optimizer = torch.optim.SGD(model.parameters(), **tmp_config)
         return LARS(optimizer=base_optimizer, eps=1e-8, trust_coef=0.001)
-    
+
     elif optimizer_config["type"] == "LarsSGD":
         tmp_config.pop("type", None)
-        return LarsSGD(model.parameters(),**tmp_config)
+        return LarsSGD(model.parameters(), **tmp_config)
 
     elif optimizer_config["type"] == "lamb":
         tmp_config.pop("type", None)
@@ -59,7 +98,7 @@ def make_optimizer(optimizer_config, model):
         tmp_config.pop("type", None)
         tmp_config.pop("amsgrad", None)
         return AdamW(model.parameters(), **tmp_config)
-        
+
     else:
         raise ValueError("{} optimizer not supported".format(optimizer_config["type"]))
 
@@ -67,15 +106,16 @@ def make_optimizer(optimizer_config, model):
 def get_lr(optimizer):
     """Obtain LR."""
     for param_group in optimizer.param_groups:
-        return param_group['lr']
+        return param_group["lr"]
+
 
 def get_lr_all(optimizer):
     """Double checking for get_lr."""
     for param_group in optimizer.param_groups:
-        yield param_group['lr']
+        yield param_group["lr"]
 
 
-def softmax(X, theta = 1.0, axis = None):
+def softmax(X, theta=1.0, axis=None):
     """Compute the softmax of each element along an axis of X.
 
     Args:
@@ -97,27 +137,29 @@ def softmax(X, theta = 1.0, axis = None):
     y = y * float(theta)
 
     # subtract the max for numerical stability
-    y = y - np.expand_dims(np.max(y, axis = axis), axis)
+    y = y - np.expand_dims(np.max(y, axis=axis), axis)
 
     # exponentiate y
     y = np.exp(y)
 
     # take the sum along the specified axis
-    ax_sum = np.expand_dims(np.sum(y, axis = axis), axis)
+    ax_sum = np.expand_dims(np.sum(y, axis=axis), axis)
 
     # finally: divide elementwise
     p = y / ax_sum
 
     # flatten if X was 1D
-    if len(X.shape) == 1: p = p.flatten()
+    if len(X.shape) == 1:
+        p = p.flatten()
 
     return p
 
 
 class AverageMeter(object):
-    """ Will calculate running micro and macro averages for various
+    """Will calculate running micro and macro averages for various
     (error/efficiency) rates.
     """
+
     def __init__(self, metric_name):
         self.numerators, self.denominators = list(), list()
         self.metric_name = metric_name
@@ -127,8 +169,10 @@ class AverageMeter(object):
         self.denominators.append(bottom)
 
     def get_macro_average(self):
-        scores = [float(self.numerators[i]) / self.denominators[i] \
-                            for i in range(len(self.denominators))]
+        scores = [
+            float(self.numerators[i]) / self.denominators[i]
+            for i in range(len(self.denominators))
+        ]
         return self.get_average(scores)
 
     def get_micro_average(self):
@@ -142,10 +186,14 @@ class AverageMeter(object):
         self.numerators, self.denominators = list(), list()
 
     def display_results(self, loglevel=logging.INFO):
-        print_rank("{} Macro average: {}".format(self.metric_name,
-                                                self.get_macro_average()), loglevel)
-        print_rank("{} Micro average: {}".format(self.metric_name,
-                                                self.get_micro_average()), loglevel)
+        print_rank(
+            "{} Macro average: {}".format(self.metric_name, self.get_macro_average()),
+            loglevel,
+        )
+        print_rank(
+            "{} Micro average: {}".format(self.metric_name, self.get_micro_average()),
+            loglevel,
+        )
 
 
 def make_lr_scheduler(annealing_config, optimizer, num_batches=1):
@@ -155,58 +203,70 @@ def make_lr_scheduler(annealing_config, optimizer, num_batches=1):
     annealing_type = annealing_config.pop("type")
 
     # per epoch or per iter
-    step_interval='epoch'
+    step_interval = "epoch"
     if "step_interval" in annealing_config:
         step_interval = annealing_config.pop("step_interval")
-
+    if annealing_type == "none":
+        return None
     if annealing_type == "step_lr":
         # convert epoch steps to iter steps
         # expochs can also be floats like 1.5
         if step_interval == "epoch":
-            annealing_config["step_size"] = int(num_batches * \
-                                    annealing_config["step_size"])
-        lr_scheduler =  StepLR(optimizer=optimizer,
-                                **annealing_config)
+            annealing_config["step_size"] = int(
+                num_batches * annealing_config["step_size"]
+            )
+        lr_scheduler = StepLR(optimizer=optimizer, **annealing_config)
     elif annealing_type == "multi_step_lr":
         # convert epoch steps to iter steps
         if step_interval == "epoch":
-            annealing_config["milestones"] = [int(i * num_batches) for i in annealing_config["milestones"]]
-        lr_scheduler =  MultiStepLR(optimizer=optimizer,
-                                **annealing_config)
+            annealing_config["milestones"] = [
+                int(i * num_batches) for i in annealing_config["milestones"]
+            ]
+        lr_scheduler = MultiStepLR(optimizer=optimizer, **annealing_config)
     elif annealing_type == "rampup-keep-expdecay-keep":
         # emulate SpecAugment scheduling
-        lr_scheduler =  RampupKeepExpdecayKeepLRScheduler(optimizer=optimizer,
-                                        **annealing_config)
-    elif annealing_type == 'val_loss':
-        lr_scheduler =  ReduceLROnPlateau(optimizer,
-                                        **annealing_config)
+        lr_scheduler = RampupKeepExpdecayKeepLRScheduler(
+            optimizer=optimizer, **annealing_config
+        )
+    elif annealing_type == "val_loss":
+        lr_scheduler = ReduceLROnPlateau(optimizer, **annealing_config)
     else:
-        raise ValueError("{} LR scheduler not supported".format(
-                                                annealing_type))
+        raise ValueError("{} LR scheduler not supported".format(annealing_type))
     return lr_scheduler
 
 
 class RampupKeepExpdecayKeepLRScheduler(torch.optim.lr_scheduler._LRScheduler):
     """Implements the LR schedule described in the specaugment paper."""
 
-    def __init__(self, optimizer, peak_lr=0.001, floor_lr=0.00001, sr=1000, si=40000, sf=160000, last_epoch=-1):
-        assert(peak_lr>=floor_lr)
+    def __init__(
+        self,
+        optimizer,
+        peak_lr=0.001,
+        floor_lr=0.00001,
+        sr=1000,
+        si=40000,
+        sf=160000,
+        last_epoch=-1,
+    ):
+        assert peak_lr >= floor_lr
         self.peak_lr = peak_lr
         self.floor_lr = floor_lr
-        assert(sr<=si)
-        assert(si<=sf)
+        assert sr <= si
+        assert si <= sf
         self.sr = sr
         self.si = si
         self.sf = sf
-        self.gamma = math.log(self.floor_lr/self.peak_lr)/(float(self.sf-self.si))
-        print('self.gamma')
+        self.gamma = math.log(self.floor_lr / self.peak_lr) / (float(self.sf - self.si))
+        print("self.gamma")
         print(self.gamma)
         self.step_count = 0
-        super(RampupKeepExpdecayKeepLRScheduler, self).__init__(optimizer, last_epoch=last_epoch)
+        super(RampupKeepExpdecayKeepLRScheduler, self).__init__(
+            optimizer, last_epoch=last_epoch
+        )
 
     def step(self, epoch=None):
         for p, lr in zip(self.optimizer.param_groups, self.get_lr()):
-            p['lr'] = lr
+            p["lr"] = lr
         self.step_count += 1
 
     def get_lr(self):
@@ -219,22 +279,22 @@ class RampupKeepExpdecayKeepLRScheduler(torch.optim.lr_scheduler._LRScheduler):
             lr = self.peak_lr
         elif self.step_count < self.sf:
             # exponential decay from peak_lr to floor_lr
-            lr = self.peak_lr * math.exp(self.gamma * (float(self.step_count-self.si)))
+            lr = self.peak_lr * math.exp(
+                self.gamma * (float(self.step_count - self.si))
+            )
 
         return [lr for base_lr in self.base_lrs]
 
 
-
-class ScheduledSamplingScheduler():
-    """ Implementing the schedule sampling rate schedule.
+class ScheduledSamplingScheduler:
+    """Implementing the schedule sampling rate schedule.
 
     0 - ramp_start          = initial_rate
     ramp_start - ramp_end   = {linearly increase to final_rate}
     ramp_end - infinity     = final_rate
     """
 
-    def __init__(self, model, ramp_start, ramp_stop,
-                            initial_rate, final_rate):
+    def __init__(self, model, ramp_start, ramp_stop, initial_rate, final_rate):
         self.model = model
         self.ramp_start = ramp_start
         self.ramp_stop = ramp_stop
@@ -246,28 +306,33 @@ class ScheduledSamplingScheduler():
         if self.iter < self.ramp_start:
             self.model.scheduled_sampling_rate = self.initial_rate
         elif self.iter >= self.ramp_start and self.iter <= self.ramp_stop:
-            self.model.scheduled_sampling_rate = self.initial_rate + (self.final_rate - self.initial_rate) * ( (self.iter - self.ramp_start) / (self.ramp_stop - self.ramp_start))
+            self.model.scheduled_sampling_rate = self.initial_rate + (
+                self.final_rate - self.initial_rate
+            ) * ((self.iter - self.ramp_start) / (self.ramp_stop - self.ramp_start))
         else:
             self.model.scheduled_sampling_rate = self.final_rate
 
-        self.model.scheduled_sampling = (self.model.scheduled_sampling_rate != 0)
+        self.model.scheduled_sampling = self.model.scheduled_sampling_rate != 0
         self.iter += 1
 
     def state_dict(self):
-        return {key: value for key, value in self.__dict__.items() if key != 'model'}
+        return {key: value for key, value in self.__dict__.items() if key != "model"}
 
     def load_state_dict(self, state_dict):
         self.__dict__.update(state_dict)
 
 
-class NBestTaskScheduler():
-    """ Implementing the scheduler for multi-task training.
+class NBestTaskScheduler:
+    """Implementing the scheduler for multi-task training.
 
     num_tasks[0]: 0                     <= i < iteration_per_task[0]
     num_tasks[1]: iteration_per_task[0] <= i < iteration_per_task[1]
     """
+
     def __init__(self, num_tasks, iteration_per_task):
-        assert len(num_tasks) == len(iteration_per_task), "Mismatched length {}!={}".format(len(num_tasks), len(iteration_per_task))
+        assert len(num_tasks) == len(
+            iteration_per_task
+        ), "Mismatched length {}!={}".format(len(num_tasks), len(iteration_per_task))
         self.iter = 0
         self.stagex = 0
         self.num_tasks = num_tasks
@@ -284,7 +349,11 @@ class NBestTaskScheduler():
         self.iter = iter_no
 
     def step(self):
-        print_rank("Iter={}: #tasks {} at stage {}".format(self.iter, self.current_num_tasks(), self.stagex))
+        print_rank(
+            "Iter={}: #tasks {} at stage {}".format(
+                self.iter, self.current_num_tasks(), self.stagex
+            )
+        )
         local_iter = self.iter % self.iteration_per_task[-1]
         if local_iter == 0:
             self.stagex = 0
@@ -296,20 +365,22 @@ class NBestTaskScheduler():
 
 # Logging and write-to-disk utilities
 
+
 def init_logging(log_dir, loglevel=logging.DEBUG):
     """Initialize logging"""
-    
-    os.makedirs(log_dir, exist_ok=True)    
+
+    os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, "log.out")
-    logging.basicConfig(filename=log_file,
-                        level=loglevel)
+    logging.basicConfig(filename=log_file, level=loglevel)
     handler = logging.StreamHandler(stream=sys.stdout)
     logging.getLogger().addHandler(handler)
 
 
 def print_cuda_stats():
     if torch.cuda.is_available():
-        print_rank("torch.cuda.memory_allocated(): {}".format(torch.cuda.memory_allocated()))
+        print_rank(
+            "torch.cuda.memory_allocated(): {}".format(torch.cuda.memory_allocated())
+        )
         print_rank("torch.cuda.memory_cached(): {}".format(torch.cuda.memory_cached()))
         print_rank("torch.cuda.synchronize(): {}".format(torch.cuda.synchronize()))
     else:
@@ -321,35 +392,37 @@ def print_rank(str, loglevel=logging.INFO):
     str = "{} : {}".format(time.ctime(), str)
     logging.log(loglevel, str)
 
+
 def print_profiler(profiler, loglevel=logging.INFO):
     memfile = io.StringIO()
-    pstats.Stats(profiler, stream=memfile) \
-        .strip_dirs() \
-        .sort_stats(pstats.SortKey.CUMULATIVE) \
-        .print_stats(20)                    
-    for l in memfile.getvalue().split('\n'):
+    pstats.Stats(profiler, stream=memfile).strip_dirs().sort_stats(
+        pstats.SortKey.CUMULATIVE
+    ).print_stats(20)
+    for l in memfile.getvalue().split("\n"):
         print_rank(l, loglevel=loglevel)
     memfile.close()
 
 
 def write_yaml(save_path, config):
-    with open(save_path, 'w', encoding='utf8') as yaml_file:
+    with open(save_path, "w", encoding="utf8") as yaml_file:
         yaml.dump(config, yaml_file, default_flow_style=False)
+
 
 def torch_save(save_path, state_or_model):
     torch.save(state_or_model, save_path)
 
+
 def write_tokens(save_path, token_list):
-    with open(save_path, 'w', encoding='utf8') as token_fid:
+    with open(save_path, "w", encoding="utf8") as token_fid:
         for w in token_list:
-            token_fid.write(w + '\n')
+            token_fid.write(w + "\n")
 
 
 def try_except_save(save_fn, **kwargs):
-    """ Try to write it out 3 times."""
+    """Try to write it out 3 times."""
 
     max_attempts = 3
-    for attempt in range(1, max_attempts+1):
+    for attempt in range(1, max_attempts + 1):
         try:
             save_fn(**kwargs)
         except IOError:
@@ -359,38 +432,48 @@ def try_except_save(save_fn, **kwargs):
             return
 
 
-def write_nbest_jsonl(uttid2jsonl, uttid2hypos, uttid2scores, outputpath, nbest, orgpath="", newpath=""):
-    """ Dump a json list file with n-best hypos."""
+def write_nbest_jsonl(
+    uttid2jsonl, uttid2hypos, uttid2scores, outputpath, nbest, orgpath="", newpath=""
+):
+    """Dump a json list file with n-best hypos."""
 
     newjsonl = []
     for uttid, jsonl in uttid2jsonl.items():
         if not uttid in uttid2hypos:
             print("Missing utterance {} in results".format(uttid))
             continue
-        hypos  = uttid2hypos[uttid]
+        hypos = uttid2hypos[uttid]
         if nbest > 1:
             # re-normalize the probablity from N-best: ignoring the events out of the N-best hypos
             weights = uttid2scores[uttid]
             if len(weights) < nbest:
                 for n in range(len(weights), nbest):
-                    print_rank("Mising {}-th best result in {}. Appending {}".format(n, uttid, weights[0]))
+                    print_rank(
+                        "Mising {}-th best result in {}. Appending {}".format(
+                            n, uttid, weights[0]
+                        )
+                    )
                     weights = np.append(weights, np.array(weights[0]))
 
-            weights = softmax(weights[0:nbest]) if uttid in uttid2scores else np.ones(nbest) / nbest
+            weights = (
+                softmax(weights[0:nbest])
+                if uttid in uttid2scores
+                else np.ones(nbest) / nbest
+            )
             # Filling the missing hypos with the 1st best candidate
             for n in range(min(nbest, len(hypos))):
                 newjson = copy.deepcopy(jsonl)
-                newjson["id"]   = "{}-{}".format(uttid, n)
+                newjson["id"] = "{}-{}".format(uttid, n)
                 newjson["text"] = " ".join(hypos[n])
                 newjson["loss_weight"] = weights[n]
         else:
             newjson = copy.deepcopy(jsonl)
-            newjson["id"]   = uttid
+            newjson["id"] = uttid
             newjson["text"] = " ".join(hypos[0])
 
         newjsonl.append(newjson)
 
-    with open(outputpath, 'w') as ofp:
+    with open(outputpath, "w") as ofp:
         for jsonl in newjsonl:
             jsonl["wav"] = jsonl["wav"].replace(orgpath, newpath)
             ofp.write("{}\n".format(json.dumps(jsonl)))
@@ -398,29 +481,45 @@ def write_nbest_jsonl(uttid2jsonl, uttid2hypos, uttid2scores, outputpath, nbest,
     return True
 
 
-def write_multitask_jsonl(uttid2jsonl, uttid2hypos, uttid2scores, outputpath, nbest, orgpath="", newpath=""):
-    """ Dump a json list file with n-best hypos."""
+def write_multitask_jsonl(
+    uttid2jsonl, uttid2hypos, uttid2scores, outputpath, nbest, orgpath="", newpath=""
+):
+    """Dump a json list file with n-best hypos."""
 
-    if nbest==1:
-        return write_nbest_jsonl(uttid2jsonl, uttid2hypos, uttid2scores, outputpath, nbest, orgpath, newpath)
+    if nbest == 1:
+        return write_nbest_jsonl(
+            uttid2jsonl, uttid2hypos, uttid2scores, outputpath, nbest, orgpath, newpath
+        )
 
     newjsonl = []
     for uttid, jsonl in uttid2jsonl.items():
         if not uttid in uttid2hypos:
             print_rank("Missing utterance {} in results".format(uttid))
             continue
-        hypos  = uttid2hypos[uttid]
+        hypos = uttid2hypos[uttid]
         # re-normalize the probablity from N-best: ignoring the events out of the N-best hypos
         weights = uttid2scores[uttid]
         if len(weights) < nbest:
             for n in range(len(weights), nbest):
-                print_rank("Mising {}-th best result in {}. Appending {}".format(n, uttid, weights[0]))
+                print_rank(
+                    "Mising {}-th best result in {}. Appending {}".format(
+                        n, uttid, weights[0]
+                    )
+                )
                 weights = np.append(weights, np.array(weights[0]))
 
-        weights = softmax(weights[0:nbest]) if uttid in uttid2scores else np.ones(nbest) / nbest
+        weights = (
+            softmax(weights[0:nbest])
+            if uttid in uttid2scores
+            else np.ones(nbest) / nbest
+        )
         newjson = jsonl
         newjson["task_weights"] = weights.tolist()
-        assert len(weights) == nbest, "{}: Weight length does not match: {} != {}".format(uttid, len(weights), nbest)
+        assert (
+            len(weights) == nbest
+        ), "{}: Weight length does not match: {} != {}".format(
+            uttid, len(weights), nbest
+        )
         newjson["text"] = " ".join(hypos[0])
         newjson["subtextl"] = []
         all_null_results = newjson["text"] == ""
@@ -431,16 +530,20 @@ def write_multitask_jsonl(uttid2jsonl, uttid2hypos, uttid2scores, outputpath, nb
                 print_rank("Mising {}-th best result in {}".format(n, uttid))
                 newjson["subtextl"].append(" ".join(hypos[0]))
             if all_null_results is True:
-                all_null_results = newjson["subtextl"][n-1] == ""
+                all_null_results = newjson["subtextl"][n - 1] == ""
 
-        assert len(newjson["subtextl"]) == nbest-1, "#sub-rec results does not match: {} != {}".format(len(newjson["subtextl"]), nbest-1)
+        assert (
+            len(newjson["subtextl"]) == nbest - 1
+        ), "#sub-rec results does not match: {} != {}".format(
+            len(newjson["subtextl"]), nbest - 1
+        )
         # take meaningful results only and ignore null string
         if all_null_results is False:
             newjsonl.append(newjson)
         else:
             print_rank("Skip {}: Invalid result '{}'".format(uttid, newjson["text"]))
 
-    with open(outputpath, 'w') as ofp:
+    with open(outputpath, "w") as ofp:
         for jsonl in newjsonl:
             jsonl["wav"] = jsonl["wav"].replace(orgpath, newpath)
             ofp.write("{}\n".format(json.dumps(jsonl)))
@@ -448,7 +551,13 @@ def write_multitask_jsonl(uttid2jsonl, uttid2hypos, uttid2scores, outputpath, nb
     return True
 
 
-def load_eval_result_jsonl(resultjsonl, uttid2hypos=OrderedDict(), uttid2scores=OrderedDict(), dumpfp=None, dump_msg="RESULT: "):
+def load_eval_result_jsonl(
+    resultjsonl,
+    uttid2hypos=OrderedDict(),
+    uttid2scores=OrderedDict(),
+    dumpfp=None,
+    dump_msg="RESULT: ",
+):
     """Load the result JSON list file dumped by Evaluator().
 
     Args:
@@ -459,9 +568,9 @@ def load_eval_result_jsonl(resultjsonl, uttid2hypos=OrderedDict(), uttid2scores=
     dumpfp (file): pointer where the WERs will be written out
     dump_msg (str): message string before the WER result
     """
-    total_weighted_best_wer   = 0
+    total_weighted_best_wer = 0
     total_weighted_oracle_wer = 0
-    total_length              = 0
+    total_length = 0
     with open(resultjsonl) as resultfp:
         for line in resultfp:
             elems = json.loads(line.strip())
@@ -470,116 +579,165 @@ def load_eval_result_jsonl(resultjsonl, uttid2hypos=OrderedDict(), uttid2scores=
                 params = list(elems["hypothesis"].keys())
                 uttid2hypos[uttid] = elems["hypothesis"][params[0]]
                 if "nbest_model_scores" in elems:
-                    uttid2scores[uttid] = np.array(elems["nbest_model_scores"][params[0]])
+                    uttid2scores[uttid] = np.array(
+                        elems["nbest_model_scores"][params[0]]
+                    )
             else:
                 print_rank("Result: {}".format(line.strip()))
                 if dumpfp is not None:
                     dumpfp.write("{}{}\n".format(dump_msg, line.strip()))
                 params = list(elems["wer-"].keys())
-                total_weighted_best_wer   += elems["wer-"][params[0]]["best_wer"] * elems["wer-"][params[0]]["total_length"]
-                total_weighted_oracle_wer += elems["wer-"][params[0]]["oracle_wer"] * elems["wer-"][params[0]]["total_length"]
+                total_weighted_best_wer += (
+                    elems["wer-"][params[0]]["best_wer"]
+                    * elems["wer-"][params[0]]["total_length"]
+                )
+                total_weighted_oracle_wer += (
+                    elems["wer-"][params[0]]["oracle_wer"]
+                    * elems["wer-"][params[0]]["total_length"]
+                )
                 total_length += elems["wer-"][params[0]]["total_length"]
 
-    return uttid2hypos, uttid2scores, total_weighted_best_wer, total_weighted_oracle_wer, total_length
+    return (
+        uttid2hypos,
+        uttid2scores,
+        total_weighted_best_wer,
+        total_weighted_oracle_wer,
+        total_length,
+    )
 
 
 def find_pretrained_model(model_path, config):
-    """"Load a a pre-trained/seed model if provided in config file."""
-    output_file=None
+    """ "Load a a pre-trained/seed model if provided in config file."""
+    output_file = None
 
     if config.get("pretrained_model_path", None):
-        output_file=config["pretrained_model_path"]
+        output_file = config["pretrained_model_path"]
 
-    print_rank('Loading Model from: {}'.format(output_file), loglevel=logging.INFO)
+    print_rank("Loading Model from: {}".format(output_file), loglevel=logging.INFO)
     return output_file
 
 
 def flatten_grads_model(learner) -> np.ndarray:
     """Given a model flatten all params and return as np array."""
 
-    return np.concatenate([w.grad.detach().clone().cpu().numpy().flatten() for w in learner.parameters()])
+    return np.concatenate(
+        [w.grad.detach().clone().cpu().numpy().flatten() for w in learner.parameters()]
+    )
 
-def flatten_grads_array(param_array)->np.array:
+
+def flatten_grads_array(param_array) -> np.array:
     """Given a model flatten all params and return as np array."""
 
-    N=len(param_array)
-    tmp_array=[]
+    N = len(param_array)
+    tmp_array = []
     for i in range(N):
-        tmp_array.append(np.concatenate([w.detach().clone().cpu().numpy().flatten() for w in param_array[i]]))
+        tmp_array.append(
+            np.concatenate(
+                [w.detach().clone().cpu().numpy().flatten() for w in param_array[i]]
+            )
+        )
     return np.array(tmp_array)
+
 
 def dist_weights_to_model(weights, parameters):
     """Updates the model parameters with the supplied weights."""
 
     offset = 0
     for param in parameters:
-        new_size = functools.reduce(lambda x, y: x*y, param.shape)
-        current_data = weights[offset:offset + new_size]
-        param.data[:] = torch.from_numpy(current_data.reshape(param.shape)).to(param.data)
+        new_size = functools.reduce(lambda x, y: x * y, param.shape)
+        current_data = weights[offset : offset + new_size]
+        param.data[:] = torch.from_numpy(current_data.reshape(param.shape)).to(
+            param.data
+        )
         offset += new_size
+
 
 def dist_params_to_model(grads, model):
     """Updates the model gradients (Corresponding to each param) with the supplied grads."""
 
     offset = 0
     for p in model:
-        new_size = functools.reduce(lambda x, y: x*y, p.data.shape)
-        current_data = torch.from_numpy(grads[offset:offset + new_size].reshape(p.data.shape)).type(p.data.dtype).to(p)
-        p.grad = current_data if p.grad==None else p.grad+current_data
+        new_size = functools.reduce(lambda x, y: x * y, p.data.shape)
+        current_data = (
+            torch.from_numpy(grads[offset : offset + new_size].reshape(p.data.shape))
+            .type(p.data.dtype)
+            .to(p)
+        )
+        p.grad = current_data if p.grad == None else p.grad + current_data
         offset += new_size
-        
+
+
 def reshape_params_to_model(grads, model):
-    """ Given Gradients and a model architecture this method updates the model gradients (Corresponding to each param)
-    with the supplied grads """
+    """Given Gradients and a model architecture this method updates the model gradients (Corresponding to each param)
+    with the supplied grads"""
     offset = 0
-    reshaped_grads=[]
+    reshaped_grads = []
     for p in model:
-        new_size = functools.reduce(lambda x, y: x*y, p.shape)
-        current_data = torch.from_numpy(grads[offset:offset + new_size].reshape(p.shape)).type(p.dtype).to(p)
+        new_size = functools.reduce(lambda x, y: x * y, p.shape)
+        current_data = (
+            torch.from_numpy(grads[offset : offset + new_size].reshape(p.shape))
+            .type(p.dtype)
+            .to(p)
+        )
         reshaped_grads.append(current_data)
         offset += new_size
     return reshaped_grads
 
+
 def to_device(x):
     return x.cuda() if torch.cuda.is_available() else x
 
+
 def update_json_log(log_path, status_info):
     """Update J-son elements"""
-    
+
     elems = {}
     if os.path.exists(log_path):
-        with open(log_path, 'r') as logfp: 
+        with open(log_path, "r") as logfp:
             elems = json.load(logfp)
             print_rank("Loaded status info: {}".format(elems))
 
     for k, v in status_info.items():
         elems[k] = v
 
-    with open(log_path, 'w') as logfp:
+    with open(log_path, "w") as logfp:
         json.dump(elems, logfp)
         print_rank("Updated status info: {}".format(elems))
 
 
 def scrub_empty_clients(data_strct):
-    """ Clean empty clients in the data structure"""
+    """Clean empty clients in the data structure"""
 
     users_out = []
     user_data_out = {}
     num_samples_out = []
-    if 'user_data_label' in data_strct.keys():
+    if "user_data_label" in data_strct.keys():
         user_data_label_out = {}
-    for ix, user in enumerate(data_strct['users']):
-        if data_strct['num_samples'][ix] > 0:
+    for ix, user in enumerate(data_strct["users"]):
+        if data_strct["num_samples"][ix] > 0:
             users_out.append(user)
-            user_data_out[user] = data_strct['user_data'][user]
-            num_samples_out.append(data_strct['num_samples'][ix])
-            if 'user_data_label' in data_strct.keys():
-                user_data_label_out[user] = data_strct['user_data_label'][user]
+            user_data_out[user] = data_strct["user_data"][user]
+            num_samples_out.append(data_strct["num_samples"][ix])
+            if "user_data_label" in data_strct.keys():
+                user_data_label_out[user] = data_strct["user_data_label"][user]
 
-    if ('user_data_label' in data_strct.keys()):
-        return edict({'users': users_out, 'user_data': user_data_out, 'num_samples': num_samples_out, 'user_data_label': user_data_label_out})
+    if "user_data_label" in data_strct.keys():
+        return edict(
+            {
+                "users": users_out,
+                "user_data": user_data_out,
+                "num_samples": num_samples_out,
+                "user_data_label": user_data_label_out,
+            }
+        )
     else:
-        return edict({'users': users_out, 'user_data': user_data_out, 'num_samples': num_samples_out})
+        return edict(
+            {
+                "users": users_out,
+                "user_data": user_data_out,
+                "num_samples": num_samples_out,
+            }
+        )
 
 
 def compute_grad_cosines(grads, model_grad):
@@ -588,24 +746,32 @@ def compute_grad_cosines(grads, model_grad):
         g2 = 0
         m2 = 0
         for p1, p2 in zip(g, m):
-            tot += torch.mul(p1, p2.to('cpu')).sum().item()
+            tot += torch.mul(p1, p2.to("cpu")).sum().item()
             g2 += torch.mul(p1, p1).sum().item()
             m2 += torch.mul(p2, p2).sum().item()
         return tot / (np.sqrt(g2) * np.sqrt(m2)) if g2 > 0 and m2 > 0 else 0
+
     return [compute_cosine(g, model_grad) for g in grads]
+
 
 # Personalization Routines
 def convex_inference(model_global, model_personal, alpha):
-    """" Model interpolation """
-    targets= torch.tensor(model_global['labels'])
-    probs = alpha*model_personal['probabilities']+(1-alpha)*model_global['probabilities']
-    probs= torch.argmax(torch.tensor(probs), dim=1)
+    """ " Model interpolation"""
+    targets = torch.tensor(model_global["labels"])
+    probs = (
+        alpha * model_personal["probabilities"]
+        + (1 - alpha) * model_global["probabilities"]
+    )
+    probs = torch.argmax(torch.tensor(probs), dim=1)
     return torch.mean((probs == targets).float()).detach().cpu().item()
 
+
 def alpha_update(model_global, model_personal, alpha, eta):
-    """" Training convex model interpolation weight. """
+    """ " Training convex model interpolation weight."""
     grad_alpha = 0.0
-    for l_params, p_params in zip(model_global.parameters(), model_personal.parameters()):
+    for l_params, p_params in zip(
+        model_global.parameters(), model_personal.parameters()
+    ):
         dif = p_params.data - l_params.data
         grad = alpha * p_params.grad + (1 - alpha) * l_params.grad
         grad_alpha += dif.view(-1).T.dot(grad.view(-1))
@@ -615,5 +781,3 @@ def alpha_update(model_global, model_personal, alpha, eta):
     alpha_n = np.clip(alpha_n.detach().cpu().item(), 0.0001, 0.9999)
 
     return alpha_n if np.isfinite(alpha_n) else 0.75
-
-
