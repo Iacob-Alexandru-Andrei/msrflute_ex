@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
+import os
 import cProfile
 import logging
 
@@ -46,11 +47,20 @@ def encode_string(word, string_to_int=True):
 def rank():
     """Return rank of node."""
     return dist.get_rank()
+    """ Return rank of node. """
+    return int(os.environ["RANK"])
+
+
+def local_rank():
+    """Return local rank of node."""
+    return int(os.environ["LOCAL_RANK"])
 
 
 def size():
     """Returns number of nodes in the distributed group, including server."""
     return dist.get_world_size()
+    """ Returns number of nodes in the distributed group, including server. """
+    return int(os.environ["WORLD_SIZE"])
 
 
 def _recv(x, src=0):
@@ -258,7 +268,7 @@ def append_async_requests(node_request_map, node):
     """Appends the asynchronous request sent to each worker during
     asynchronous training."""
 
-    ack = to_device(torch.zeros(1))
+    ack = to_device(torch.tensor(1))
     req = dist.irecv(tensor=ack, src=node)
     node_request_map.append((node, req))
     return node_request_map
@@ -340,13 +350,18 @@ class Server:
             profiler.enable()
 
         # Update lr + model parameters each round for all workers
-        lr, model_params = server_data
+        lr, model_params, nround = server_data
         for worker_rank in range(1, size()):
             _send(COMMAND_UPDATE, worker_rank)
             _send(lr, worker_rank)
             _send_gradients(model_params, worker_rank)
             print_rank(
                 f"Finished sending lr {lr} and n_params {len(model_params)} to worker {worker_rank}",
+                loglevel=logging.DEBUG,
+            )
+            _send(float(nround), worker_rank)
+            print_rank(
+                f"Finished sending lr {lr} and n_params {len(model_params)} to worker {worker_rank} - round {nround}",
                 loglevel=logging.DEBUG,
             )
 
@@ -514,6 +529,7 @@ class Worker:
             # Initialize tensors -- required by torch.distributed
             command, client_idx, mode = 0, 0, 0  # int
             lr = torch.zeros(1)  # float
+            lr, nround = torch.zeros(1), torch.zeros(1)  # float
 
             # Read command
             command = _recv(command)
@@ -529,6 +545,13 @@ class Worker:
                 server_data = (lr, model_params)
                 print_rank(
                     f"Received lr: {lr} and n_params: {len(model_params)}",
+                    loglevel=logging.DEBUG,
+                )
+
+                nround = _recv(nround, 0)
+                server_data = (lr, model_params, int(nround))
+                print_rank(
+                    f"Received lr: {lr} and n_params: {len(model_params)} - round {nround}",
                     loglevel=logging.DEBUG,
                 )
 

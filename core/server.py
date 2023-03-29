@@ -38,7 +38,6 @@ from utils import (
 # For profiling
 import cProfile
 import pstats
-import traceback
 
 # AzureML-related libs
 from azureml.core import Run
@@ -88,11 +87,11 @@ class OptimizationServer(federated.Server):
         self.client_idx_list = list(range(num_clients))
         self.config = config
         server_config = config["server_config"]
-
         decoder_config = config.get("decoder_config", None)
 
         self.max_iteration = server_config["max_iteration"]
         self.do_clustering = server_config.get("clustering", False)
+        self.send_dicts = server_config.get("send_dicts", False)
 
         self.num_clients_per_iteration = (
             [int(x) for x in server_config["num_clients_per_iteration"].split(",")]
@@ -113,7 +112,6 @@ class OptimizationServer(federated.Server):
 
         # TODO: does this need to be adjusted for custom metrics?
         self.metrics = dict()
-        self.task = server_config["task"]
 
         self.model_backup_freq = server_config.get("model_backup_freq", 100)
         self.worker_trainer_config = server_config.get("trainer_config", {})
@@ -144,9 +142,7 @@ class OptimizationServer(federated.Server):
             model=model,
             optimizer=optimizer,
             ss_scheduler=ss_scheduler,
-            train_dataloader=server_train_dataloader
-            if server_train_dataloader is not None
-            else None,
+            train_dataloader=server_train_dataloader,
             val_dataloader=None,
             max_grad_norm=max_grad_norm,
             anneal_config=server_config["annealing_config"],
@@ -179,13 +175,15 @@ class OptimizationServer(federated.Server):
                 ss_scheduler=ss_scheduler,
                 train_dataloader=server_train_dataloader,
                 server_replay_config=server_config["server_replay_config"],
-                val_dataloader=None,
                 max_grad_norm=server_config["server_replay_config"].get(
                     "max_grad_norm",
                     server_config["data_config"]["train"].get("max_grad_norm", None),
                 ),
                 anneal_config=server_config["server_replay_config"].get(
                     "annealing_config", None
+                ),
+                ignore_subtask=server_config["server_replay_config"].get(
+                    "ignore_subtask", False
                 ),
             )
 
@@ -300,13 +298,12 @@ class OptimizationServer(federated.Server):
 
             # Dump all the information in aggregate_metric
             print_rank("Saving Model Before Starting Training", loglevel=logging.INFO)
-            # FIXME bring back previous models
-            # for token in ["best_val_loss", "best_val_acc", "best_test_acc", "latest"]:
-            #     self.worker_trainer.save(
-            #         model_path=self.model_path,
-            #         token=token,
-            #         config=self.config["server_config"],
-            #     )
+            for token in ["best_val_loss", "best_val_acc", "best_test_acc", "latest"]:
+                self.worker_trainer.save(
+                    model_path=self.model_path,
+                    token=token,
+                    config=self.config["server_config"],
+                )
 
             # Training loop
             self.worker_trainer.model.train()
@@ -316,7 +313,6 @@ class OptimizationServer(federated.Server):
 
                 def log_metric(k, v):
                     metrics_payload[k] = v
-                    print_rank(f"{k} {v}")
 
                 print_rank("==== iteration {}".format(i))
                 log_metric("Current iteration", i)
@@ -328,13 +324,21 @@ class OptimizationServer(federated.Server):
                 # Run training on clients
                 self.worker_trainer.model.zero_grad()
                 self.train_loss = []
-                server_data = (
-                    initial_lr,
-                    [
+
+                if self.send_dicts:  # Send state dictionaries
+                    glob_payload = [
+                        self.worker_trainer.model.state_dict()[param_key].to(
+                            torch.device("cpu")
+                        )
+                        for param_key in self.worker_trainer.model.state_dict()
+                    ]
+                else:  # Send parameters
+                    glob_payload = [
                         p.data.to(torch.device("cpu"))
                         for p in self.worker_trainer.model.parameters()
-                    ],
-                )
+                    ]
+
+                server_data = (initial_lr, glob_payload, i)
 
                 # Random number of clients per iteration
                 if len(self.num_clients_per_iteration) > 1:
@@ -415,7 +419,6 @@ class OptimizationServer(federated.Server):
                     client_var_grad = client_output["vg"]
                     client_norm_grad = client_output["rg"]
                     client_payload = client_output["pl"]
-                    num_samples = client_output["ns"]
 
                     if apply_privacy_metrics:
                         privacy_stats = client_output["ps"]
@@ -550,6 +553,9 @@ class OptimizationServer(federated.Server):
                 if len(eval_list) > 0:
                     print_rank("Running {} at itr={}".format(eval_list, i + 1))
                     self.metrics["worker_trainer"] = self.worker_trainer
+                    if hasattr(self.strategy, "tmp_unsup"):
+                        self.metrics["tmp_sup"] = self.strategy.tmp_sup
+                        self.metrics["tmp_unsup"] = self.strategy.tmp_unsup
                     self.metrics = self.evaluation.run(
                         eval_list, self.metrics, metric_logger=run.log
                     )
@@ -598,9 +604,6 @@ class OptimizationServer(federated.Server):
                 )
 
                 log_metric("secsPerRoundTotal", self.run_stats["secsPerRoundTotal"][-1])
-                log_metric("round", len(self.run_stats["secsPerRoundTotal"]))
-                log_metric("Wall clock", len(self.run_stats["secsPerRoundTotal"]))
-
                 if self.do_profiling:
                     log_metric(
                         "secsPerClientRound", self.run_stats["secsPerClientRound"][-1]
@@ -640,8 +643,7 @@ class OptimizationServer(federated.Server):
                 # Log all the metrics
                 for k in metrics_payload:
                     run.log(k, metrics_payload[k])
-        except Exception as e:
-            print_rank(traceback.format_exc())
+
         finally:  # perform cleanup even if error was raised above
             self.terminate_workers(terminate=(not self.do_clustering))
 
@@ -654,13 +656,13 @@ class OptimizationServer(federated.Server):
         Args:
             i: no. of iterations.
         """
-        # FIXME uncomment model saving
+
         # Always save the latest model
-        # self.worker_trainer.save(
-        #     model_path=self.model_path,
-        #     token="latest",
-        #     config=self.config["server_config"],
-        # )
+        self.worker_trainer.save(
+            model_path=self.model_path,
+            token="latest",
+            config=self.config["server_config"],
+        )
 
         if (i % self.model_backup_freq) == 0:  # save the current best models
             self.worker_trainer.save(
@@ -668,17 +670,17 @@ class OptimizationServer(federated.Server):
                 token="epoch{}".format(i),
                 config=self.config["server_config"],
             )
-            # FIXME uncomment model saving
-            # for bodyname in ["best_val_acc", "best_val_loss", "best_test_acc"]:
-            #     src_model_path = os.path.join(
-            #         self.model_path, "{}_model.tar".format(bodyname)
-            #     )
-            #     if os.path.exists(src_model_path):
-            #         dst_model_path = os.path.join(
-            #             self.model_path, "epoch{}_{}_model.tar".format(i, bodyname)
-            #         )
-            #         shutil.copyfile(src_model_path, dst_model_path)
-            #         print_rank("Saved {}".format(dst_model_path))
+
+            for bodyname in ["best_val_acc", "best_val_loss", "best_test_acc"]:
+                src_model_path = os.path.join(
+                    self.model_path, "{}_model.tar".format(bodyname)
+                )
+                if os.path.exists(src_model_path):
+                    dst_model_path = os.path.join(
+                        self.model_path, "epoch{}_{}_model.tar".format(i, bodyname)
+                    )
+                    shutil.copyfile(src_model_path, dst_model_path)
+                    print_rank("Saved {}".format(dst_model_path))
 
     def fall_back_to_prev_best_status(self):
         """Go back to the past best status and switch to the recent best model."""

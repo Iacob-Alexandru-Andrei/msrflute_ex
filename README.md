@@ -66,7 +66,7 @@ You can find the example above in the [cv_lr_mnist](experiments/cv_lr_mnist/) fo
 Install the requirements stated inside of `requirements.txt`. Ideally this sould be done inside of a virtual environment, for instance, using Anaconda.
 
 ```
-conda create -n FLUTE python==3.8
+conda create -n FLUTE python==3.7
 pip install -r requirements.txt
 ```
 
@@ -178,6 +178,8 @@ This software includes the model implementation of the example ECG Classificatio
 
 This software includes the model implementation of the FedNewsRec repository (https://github.com/taoqi98/FedNewsRec)| Code from the paper "Privacy-Preserving News Recommendation Model Learning" (https://arxiv.org/abs/2003.09592) ported to PyTorch framework to reproduce the [fednewsrec](experiments/fednewsrec/model.py) experiment.
 For more information about third-party OSS licence, please refer to [NOTICE.txt](NOTICE.txt).
+
+This software includes the Data Augmentation scripts of the Fast AutoAugment repository (https://github.com/kakaobrain/fast-autoaugment) to preprocess the data used in the [semisupervision](experiments/semisupervision/dataloaders/cifar_dataset.py) experiment.
 ## Support
 
 You are welcome to open issues on this repository related to bug reports and feature requests.

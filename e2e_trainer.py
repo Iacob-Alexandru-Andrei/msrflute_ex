@@ -88,50 +88,45 @@ def run_worker(model_path, config, task, data_path, local_rank, backend):
     server_config = config["server_config"]
 
     # Backend initialization
+    WORLD_RANK = federated.rank()
+    LOCAL_RANK = federated.local_rank()
     print_rank(f"Backend: {backend}")
-    dist.init_process_group(backend=backend, init_method=None)
-    rank = dist.get_rank()
-    if torch.cuda.is_available():
-        torch.cuda.set_device(rank)
-
-    # Get the rank on NCCL/GLOO
-    rank = local_rank if local_rank > -1 else federated.rank()
+    dist.init_process_group(
+        backend=backend, init_method=None, rank=WORLD_RANK, world_size=federated.size()
+    )
 
     # Assign NCCL thread to a specific GPU
     if torch.cuda.is_available():
-        n_gpus = torch.cuda.device_count()
-        torch.cuda.set_device(federated.rank() % n_gpus)
-        print_rank(f"Assigning worker to GPU {federated.rank() % n_gpus}")
+        print_rank(f"Assigning worker to GPU {LOCAL_RANK}")
+        device = torch.device("cuda:{}".format(LOCAL_RANK))
+        torch.cuda.set_device(device)
 
     # Make the Model to distribute to workers
     model = make_model(model_config)
 
     # Get evaluation datasets
-    data_config = config["server_config"]["data_config"]
-    val_dataset = get_dataset(
-        data_path, data_config["val"], task, mode="val", test_only=True
-    )
-    test_dataset = get_dataset(
-        data_path, data_config["test"], task, mode="test", test_only=True
-    )
+    val_dataset = get_dataset(data_path, config, task, mode="val", test_only=True)
+    test_dataset = get_dataset(data_path, config, task, mode="test", test_only=True)
 
     # Create list of clients for test/val -- Server need the indexes and Worker the clients list
     val_clients = list(make_eval_clients(val_dataset, config))
     test_clients = list(make_eval_clients(test_dataset, config))
 
     # pre-cache the training data and capture the number of clients for sampling
-    client_train_config = config["client_config"]["data_config"]["train"]
-    num_clients = Client.get_train_dataset(data_path, client_train_config, task)
+    num_clients = Client.get_train_dataset(data_path, config, task)
     config["server_config"]["data_config"]["num_clients"] = num_clients
 
     # Instantiate the Server object on the first thread
-    if rank == 0:
+    if WORLD_RANK == 0:
         try:
             print_rank("Server data preparation")
 
-            if "train" in data_config:
+            if "train" in config["server_config"]["data_config"]:
                 server_train_dataloader = make_train_dataloader(
-                    data_config["train"], data_path, task=task, clientx=None
+                    config["server_config"]["data_config"]["train"],
+                    data_path,
+                    task=task,
+                    clientx=None,
                 )
             else:
                 server_train_dataloader = None
@@ -162,7 +157,7 @@ def run_worker(model_path, config, task, data_path, local_rank, backend):
             server_type = server_config["type"]
             server_setup = select_server(server_type)  # Return the server class
             server = server_setup(
-                num_clients=data_config["num_clients"],
+                num_clients=config["server_config"]["data_config"]["num_clients"],
                 model=model,
                 optimizer=optimizer,
                 ss_scheduler=None,
@@ -186,7 +181,7 @@ def run_worker(model_path, config, task, data_path, local_rank, backend):
     else:
 
         # Instantiate client-processing Worker on remaining threads
-        print_rank("Worker on node {}: process started".format(rank))
+        print_rank("Worker on node {}: process started".format(WORLD_RANK))
         client_config = config["client_config"]
         worker = federated.Worker(
             model=model,
@@ -271,7 +266,7 @@ if __name__ == "__main__":
         # Update the model path for the sake of AzureML
         id = Run.get_context().id
         experiment_name = "-".join(id.split("-")[-4:-2])
-        experiment_root = os.path.join(outputPath,str(datetime.now()),  experiment_name)
+        experiment_root = os.path.join(outputPath, str(datetime.now()), experiment_name)
         os.makedirs(experiment_root, exist_ok=True)
         model_path = os.path.join(experiment_root, "models")
         log_path = os.path.join(experiment_root, "log")
@@ -297,5 +292,3 @@ if __name__ == "__main__":
         config.validate()
         # Instantiate either Server or Worker on the thread
         run_worker(model_path, config, task, data_path, local_rank, backend)
-
-              

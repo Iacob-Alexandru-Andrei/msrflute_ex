@@ -490,12 +490,16 @@ class ServerReplayConfig(Config):
     """
 
     server_iterations: int
+    ignore_subtask: bool
     optimizer_config: OptimizerConfig
 
     @staticmethod
     def from_dict(config) -> ServerReplayConfig:
         return ServerReplayConfig(
             config["server_iterations"],
+            OptimizerConfig.from_dict(config["optimizer_config"]),
+            config["server_iterations"],
+            config["ignore_subtask"],
             OptimizerConfig.from_dict(config["optimizer_config"]),
         )
 

@@ -31,6 +31,18 @@ def make_train_dataloader(
 ):
     """Create a dataloader for training on either server or client side"""
 
+
+def make_train_dataloader(
+    data_config,
+    data_path,
+    clientx,
+    task=None,
+    vec_size=300,
+    data_strct=None,
+    replay_server=False,
+):
+    """Create a dataloader for training on either server or client side"""
+
     mode = "train"
     tokenizer_type = data_config.get("tokenizer_type", "not_applicable")
 
@@ -44,6 +56,9 @@ def make_train_dataloader(
             return None
         my_data = os.path.join(data_path, data_config["train_data_server"])
         mode = "val"
+
+        mode = "val"  # Only for replay_server
+        clientx = 0  # Only for replay_server
 
     # Training list on a client side
     else:
@@ -106,12 +121,17 @@ def make_test_dataloader(data_config, data_path, task=None, data_strct=None):
     return test_dataloader
 
 
-def get_dataset(data_path, data_config, task, mode, test_only=False):
+def get_dataset(
+    data_path, config, task, mode, test_only=False, user_idx=-1, data_strct=None
+):
     """Return the task train/val/test dataset"""
 
-    dir = os.path.join("experiments", task, "dataloaders", "dataset.py")
-    loader = SourceFileLoader("Dataset", dir).load_module()
+    # Load Dataset Class
+    data_config = get_data_config(config, mode)
+    dir_ = os.path.join("experiments", task, "dataloaders", "dataset.py")
+    loader = SourceFileLoader("Dataset", dir_).load_module()
     dataset = loader.Dataset
+
     data_file = (
         "val_data"
         if mode == "val"
@@ -120,10 +140,30 @@ def get_dataset(data_path, data_config, task, mode, test_only=False):
         else "list_of_train_data"
     )
     data_file = data_config[data_file]
-    print(data_path, data_file, end=" ")
-    data_file = os.path.join(data_path, data_file) if data_file != None else data_file
-    if data_file != None:
-        print(os.path.join(data_path, data_file))
-    dataset = dataset(data_file, test_only=test_only, user_idx=-1, args=data_config)
+    data_pointer = (
+        os.path.join(data_path, data_file) if data_file != None else data_file
+    )
 
-    return dataset
+    return dataset(
+        data_pointer if data_strct == None else data_strct,
+        test_only=test_only,
+        user_idx=user_idx,
+        args=data_config,
+    )
+
+
+def get_data_config(config, mode):
+    """Return the configuration for the dataset"""
+
+    if mode == "val":
+        data_config = config["server_config"]["data_config"]["val"]
+    elif mode == "test":
+        data_config = config["server_config"]["data_config"]["test"]
+    else:
+        data_config = config["client_config"]["data_config"]["train"]
+
+    semisupervision_config = config["client_config"].get("semisupervision", None)
+    if semisupervision_config == None:
+        return data_config
+    else:
+        return {**data_config, **semisupervision_config}
