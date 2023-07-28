@@ -15,7 +15,7 @@ class OPENIMG:
             "user_data": defaultdict(list),
             "user_data_label": defaultdict(list),
         }
-        json_path = "./temp/speech_json_partition.json"
+        json_path = "./temp/json_partition.json"
         if "json" in data_path:
             with open(json_path, mode="r") as js:
                 train_dict = json.load(js)

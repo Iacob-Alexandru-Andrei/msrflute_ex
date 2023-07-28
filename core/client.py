@@ -43,7 +43,6 @@ from extensions.privacy import metrics as privacy_metrics
 from experiments import make_model
 
 global train_dataset
-
 global trainset_unlab
 global trainset_unlab_rand
 
@@ -107,31 +106,6 @@ class Client:
     @staticmethod
     def get_data(clients, dataset):
         """Create training dictionary"""
-
-        dataset = (
-            train_dataset if len(clients) == 1 else dataset
-        )  # clients is an integer only for training mode
-        data_with_labels = hasattr(dataset, "user_data_label")
-        input_strct = (
-            {
-                "users": [],
-                "num_samples": [],
-                "user_data": dict(),
-                "user_data_label": dict(),
-            }
-            if data_with_labels
-            else {"users": [], "num_samples": [], "user_data": dict()}
-        )
-
-        for client in clients:
-            user = dataset.user_list[client]
-            input_strct["users"].append(user)
-            input_strct["num_samples"].append(dataset.num_samples[client])
-            input_strct["user_data"][user] = dataset.user_data[user]
-            if data_with_labels:
-                input_strct["user_data_label"][user] = dataset.user_data_label[user]
-
-        return edict(input_strct)
 
         if dataset == None:  # Training case
             datasets = (
@@ -197,8 +171,6 @@ class Client:
         begin = time.time()
 
         # Use the server's data config since we're distributing test/validate from the server
-        data_config = config["server_config"]["data_config"][mode]
-        want_logits = data_config.get("wantLogits", False)
         data_strct = data_strcts[0]
         data_config = config["server_config"]["data_config"][mode]
         want_logits = data_config.get("wantLogits", False)
@@ -230,21 +202,8 @@ class Client:
         print_rank(
             f"Copying model parameters... {n_layers}/{n_params}", loglevel=logging.DEBUG
         )
-        print_rank(
-            f"Copying model parameters... {n_layers}/{n_params}", loglevel=logging.DEBUG
-        )
 
         model = to_device(model)
-        for p, data in zip(model.parameters(), model_parameters):
-            p.data = (
-                data.detach().clone().cuda()
-                if torch.cuda.is_available()
-                else data.detach().clone()
-            )
-        print_rank(
-            f"Model setup complete. {time.time() - begin}s elapsed.",
-            loglevel=logging.DEBUG,
-        )
 
         if send_dicts:  # Send model state dictionary
             tmp = {}
@@ -353,12 +312,6 @@ class Client:
         model_config = config["model_config"]
         client_config = config["client_config"]
         data_config = client_config["data_config"]["train"]
-        task = client_config.get("task", {})
-        trainer_config = client_config.get("trainer_config", {})
-        privacy_metrics_config = config.get("privacy_metrics_config", None)
-        model_config = config["model_config"]
-        client_config = config["client_config"]
-        data_config = client_config["data_config"]["train"]
         semisupervision_config = client_config.get("semisupervision", None)
         task = client_config.get("task", {})
         trainer_config = client_config.get("trainer_config", {})
@@ -371,31 +324,18 @@ class Client:
             f"Client successfully instantiated strategy {strategy}",
             loglevel=logging.DEBUG,
         )
-        StrategyClass = select_strategy(config["strategy"])
-        strategy = StrategyClass("client", config)
-        print_rank(
-            f"Client successfully instantiated strategy {strategy}",
-            loglevel=logging.DEBUG,
-        )
         send_dicts = config["server_config"].get("send_dicts", False)
 
         begin = time.time()
         client_stats = {}
 
-        user = data_strct["users"][0]
-        print_rank(
-            "Loading : {}-th client with name: {}, {} samples, {}s elapsed".format(
-                client_id[0], user, data_strct["num_samples"][0], time.time() - begin
-            ),
-            loglevel=logging.INFO,
-        )
         data_strct = data_strcts[0]
         user = data_strct["users"][0]
         print_rank(
             "Loading : {}-th client with name: {}, {} samples, {}s elapsed".format(
                 client_id[0], user, data_strct["num_samples"][0], time.time() - begin
             ),
-            loglevel=logging.INFO,
+            loglevel=logging.DEBUG,
         )
 
         # Get dataloaders
@@ -418,16 +358,6 @@ class Client:
             f"Copying model parameters... {n_layers}/{n_params}", loglevel=logging.DEBUG
         )
         model = to_device(model)
-        for p, data in zip(model.parameters(), model_parameters):
-            p.data = (
-                data.detach().clone().cuda()
-                if torch.cuda.is_available()
-                else data.detach().clone()
-            )
-        print_rank(
-            f"Model setup complete. {time.time() - begin}s elapsed.",
-            loglevel=logging.DEBUG,
-        )
 
         if send_dicts:  # Send model state dictionary
             tmp = {}
@@ -527,14 +457,6 @@ class Client:
         )
 
         # This is where training actually happens
-        train_loss, num_samples = trainer.train_desired_samples(
-            desired_max_samples=desired_max_samples,
-            apply_privacy_metrics=apply_privacy_metrics,
-        )
-        print_rank(
-            "client={}: training loss={}".format(client_id[0], train_loss),
-            loglevel=logging.DEBUG,
-        )
         algo_payload = None
 
         if semisupervision_config != None:
@@ -558,6 +480,8 @@ class Client:
             }
 
         train_loss, num_samples, algo_computation = trainer.train_desired_samples(
+            client_id=client_id[0],
+            task=f"{task}_server_{os.environ['MASTER_ADDR']}_het_World_{os.environ['WORLD_SIZE']}_Mau_{os.environ['MAU_SIZE']}_Ngon_{os.environ['NGON_SIZE']}_{os.environ['EXPERIMENT_START_TIME']}",
             desired_max_samples=desired_max_samples,
             apply_privacy_metrics=apply_privacy_metrics,
             algo_payload=algo_payload,
@@ -569,9 +493,6 @@ class Client:
 
         # Estimate gradient magnitude mean/var
         # Now computed when the sufficient stats are updated.
-        assert "sum" in trainer.sufficient_stats
-        assert "mean" in trainer.sufficient_stats
-
         assert "sum" in trainer.sufficient_stats
         assert "mean" in trainer.sufficient_stats
 
@@ -644,7 +565,9 @@ class Client:
 
             # Run Local Processing
             train_loss, num_samples = local_trainer.train_desired_samples(
-                desired_max_samples=desired_max_samples, apply_privacy_metrics=False
+                client_id=client_id[0],
+                desired_max_samples=desired_max_samples,
+                apply_privacy_metrics=False,
             )
             print_rank(
                 "client={}, user:{}: LOCAL training loss={}".format(
@@ -672,7 +595,6 @@ class Client:
         end = time.time()
         client_stats["training"] = end - begin_training
         client_stats["full cost"] = end - begin
-
         print_rank(
             f"Client training cost {end - begin_training}s", loglevel=logging.DEBUG
         )

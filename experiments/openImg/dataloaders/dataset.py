@@ -90,6 +90,7 @@ class Dataset(BaseDataset):
     def __getitem__(self, idx):
 
         img = Image.open(self.data[idx])
+        
         if img.mode != "RGB":
             img = img.convert("RGB")
 

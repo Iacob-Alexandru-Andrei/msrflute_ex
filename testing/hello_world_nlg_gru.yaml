@@ -4,7 +4,7 @@ setup:
     task: "nlg_gru"
     backend: "nccl"
     # num_skip_decoding: Null
-    # local_rank: Null
+    local_rank: 1
 
 # Basic configuration file for running nlg_gru example using json files.
 # Parameters needed to initialize the model

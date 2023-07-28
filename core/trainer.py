@@ -24,7 +24,7 @@ from utils import (
     try_except_save,
     write_yaml,
 )
-
+from . import federated
 from utils.utils import to_device, get_label_VAT
 import time
 
@@ -349,7 +349,12 @@ class Trainer(TrainerBase):
         }
 
     def train_desired_samples(
-        self, desired_max_samples=None, apply_privacy_metrics=False
+        self,
+        client_id,
+        task,
+        desired_max_samples=None,
+        apply_privacy_metrics=False,
+        algo_payload=None,
     ):
         """Triggers training step.
 
@@ -365,12 +370,9 @@ class Trainer(TrainerBase):
         total_train_loss = 0
         algo_computation = None
 
-        num_samples_per_epoch, train_loss_per_epoch = self.run_train_epoch(
-            desired_max_samples, apply_privacy_metrics
-        )
         if algo_payload == None:
             num_samples_per_epoch, train_loss_per_epoch = self.run_train_epoch(
-                desired_max_samples, apply_privacy_metrics
+                client_id, task, desired_max_samples, apply_privacy_metrics
             )
         elif algo_payload["algo"] == "FedLabels":
             (
@@ -388,9 +390,10 @@ class Trainer(TrainerBase):
 
     def run_train_epoch(
         self,
+        client_id,
+        task,
         desired_max_samples=None,
         apply_privacy_metrics=False,
-        task="google_speech_4_A40_44_cpu_fast_agg",
     ):
         """Implementation example for training the model.
 
@@ -478,12 +481,12 @@ class Trainer(TrainerBase):
         if os.path.exists(filename):
             with open(filename, "a") as out:
                 out.write(
-                    f"{-1},{client_end - client_begin},{num_samples},{int(num_samples/20)}\n"
+                    f"{client_id},{client_end - client_begin},{num_samples},{int(num_samples/20)},{federated.rank()},{federated.local_rank()},{os.environ['SLURMD_NODENAME']}\n"
                 )
         else:
             with open(filename, "x") as out:
                 out.write(
-                    f"client_id,training_time,n_samples,n_batches\n{-1},{client_end - client_begin},{num_samples},{int(num_samples/20)}\n"
+                    f"client_id,training_time,n_samples,n_batches,rank,local_rank,node_name\n{client_id},{client_end - client_begin},{num_samples},{int(num_samples/20)},{federated.rank()},{federated.local_rank()},{os.environ['SLURMD_NODENAME']}\n"
                 )
 
         # Take a step in lr_scheduler

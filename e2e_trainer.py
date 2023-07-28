@@ -90,111 +90,130 @@ def run_worker(model_path, config, task, data_path, local_rank, backend):
     # Backend initialization
     WORLD_RANK = federated.rank()
     LOCAL_RANK = federated.local_rank()
-    print_rank(f"Backend: {backend}")
-    dist.init_process_group(
-        backend=backend, init_method=None, rank=WORLD_RANK, world_size=federated.size()
-    )
-
-    # Assign NCCL thread to a specific GPU
-    if torch.cuda.is_available():
-        print_rank(f"Assigning worker to GPU {LOCAL_RANK}")
-        device = torch.device("cuda:{}".format(LOCAL_RANK))
-        torch.cuda.set_device(device)
-
-    # Make the Model to distribute to workers
-    model = make_model(model_config)
-
-    # Get evaluation datasets
-    val_dataset = get_dataset(data_path, config, task, mode="val", test_only=True)
-    test_dataset = get_dataset(data_path, config, task, mode="test", test_only=True)
-
-    # Create list of clients for test/val -- Server need the indexes and Worker the clients list
-    val_clients = list(make_eval_clients(val_dataset, config))
-    test_clients = list(make_eval_clients(test_dataset, config))
-
-    # pre-cache the training data and capture the number of clients for sampling
-    num_clients = Client.get_train_dataset(data_path, config, task)
-    config["server_config"]["data_config"]["num_clients"] = num_clients
-
-    # Instantiate the Server object on the first thread
-    if WORLD_RANK == 0:
-        try:
-            print_rank("Server data preparation")
-
-            if "train" in config["server_config"]["data_config"]:
-                server_train_dataloader = make_train_dataloader(
-                    config["server_config"]["data_config"]["train"],
-                    data_path,
-                    task=task,
-                    clientx=None,
-                )
-            else:
-                server_train_dataloader = None
-
-            idx_val_clients = list(
-                range(len(val_clients))
-            )  # Generates indexes for val clients
-            idx_test_clients = list(
-                range(len(test_clients))
-            )  # Generates indexes for test clients
-
-            print_rank("Prepared the dataloaders")
-
-            # Create the optimizer on the server
-            optimizer = make_optimizer(server_config["optimizer_config"], model)
-
-            # Load a model that's already trained
-            best_trained_model = find_pretrained_model(model_path, model_config)
-            if best_trained_model is not None:
-                model_state_dict = torch.load(
-                    best_trained_model,
-                    map_location=None
-                    if torch.cuda.is_available()
-                    else torch.device("cpu"),
-                )
-                model.load_state_dict(model_state_dict)
-
-            server_type = server_config["type"]
-            server_setup = select_server(server_type)  # Return the server class
-            server = server_setup(
-                num_clients=config["server_config"]["data_config"]["num_clients"],
-                model=model,
-                optimizer=optimizer,
-                ss_scheduler=None,
-                data_path=data_path,
-                model_path=model_path,
-                server_train_dataloader=server_train_dataloader,
-                config=config,
-                idx_val_clients=idx_val_clients,
-                idx_test_clients=idx_test_clients,
-            )
-            log_run_properties(config)
-
-        except Exception as e:
-            # Be sure the other workers are shut down.
-            server.terminate_workers()
-            raise e
-
-        print_rank("Launching server")
-        server.run()
-
+    node_name = os.environ["SLURMD_NODENAME"]
+    if node_name == "mauao":
+        LOCAL_RANK_LIMIT = int(os.environ["MAU_SIZE"])
     else:
+        LOCAL_RANK_LIMIT = int(os.environ["NGON_SIZE"])
 
-        # Instantiate client-processing Worker on remaining threads
-        print_rank("Worker on node {}: process started".format(WORLD_RANK))
-        client_config = config["client_config"]
-        worker = federated.Worker(
-            model=model,
-            data_path=data_path,
-            do_profiling=client_config.get("do_profiling", False),
-            val_clients=val_clients,
-            test_clients=test_clients,
-            val_dataset=val_dataset,
-            test_dataset=test_dataset,
-            config=config,
+    print_rank(f"Backend: {backend}")
+    print_rank(f"WORLD_RANK: {WORLD_RANK}")
+    print_rank(f"LOCAL_RANK: {LOCAL_RANK}")
+    print_rank(f"NODE_NAME: {node_name}")
+    print_rank(f"LOCAL_RANK_LIMIT: {LOCAL_RANK_LIMIT}")
+
+    if WORLD_RANK < federated.size() and LOCAL_RANK < LOCAL_RANK_LIMIT:
+        print_rank("Passed")
+
+        dist.init_process_group(
+            backend=backend,
+            init_method=None,
+            rank=WORLD_RANK,
+            world_size=federated.size(),
         )
+        if WORLD_RANK == 0:
+            print(f"Group initialized? {dist.is_initialized()}", flush=True)
+            print_rank(f"Master_node: {os.environ['SLURMD_NODENAME']}")
 
-        worker.run()
+        # Assign NCCL thread to a specific GPU
+        if torch.cuda.is_available():
+            print_rank(f"Assigning worker to GPU {LOCAL_RANK}")
+            device = torch.device("cuda:{}".format(LOCAL_RANK))
+            torch.cuda.set_device(device)
+
+        # Make the Model to distribute to workers
+        model = make_model(model_config)
+
+        # Get evaluation datasets
+        val_dataset = get_dataset(data_path, config, task, mode="val", test_only=True)
+        test_dataset = get_dataset(data_path, config, task, mode="test", test_only=True)
+
+        # Create list of clients for test/val -- Server need the indexes and Worker the clients list
+        val_clients = list(make_eval_clients(val_dataset, config))
+        test_clients = list(make_eval_clients(test_dataset, config))
+
+        # pre-cache the training data and capture the number of clients for sampling
+        num_clients = Client.get_train_dataset(data_path, config, task)
+        config["server_config"]["data_config"]["num_clients"] = num_clients
+
+        # Instantiate the Server object on the first thread
+        if WORLD_RANK == 0:
+            try:
+                print_rank("Server data preparation")
+
+                if "train" in config["server_config"]["data_config"]:
+                    server_train_dataloader = make_train_dataloader(
+                        config["server_config"]["data_config"]["train"],
+                        data_path,
+                        task=task,
+                        clientx=None,
+                    )
+                else:
+                    server_train_dataloader = None
+
+                idx_val_clients = list(
+                    range(len(val_clients))
+                )  # Generates indexes for val clients
+                idx_test_clients = list(
+                    range(len(test_clients))
+                )  # Generates indexes for test clients
+
+                print_rank("Prepared the dataloaders")
+
+                # Create the optimizer on the server
+                optimizer = make_optimizer(server_config["optimizer_config"], model)
+
+                # Load a model that's already trained
+                best_trained_model = find_pretrained_model(model_path, model_config)
+                if best_trained_model is not None:
+                    model_state_dict = torch.load(
+                        best_trained_model,
+                        map_location=None
+                        if torch.cuda.is_available()
+                        else torch.device("cpu"),
+                    )
+                    model.load_state_dict(model_state_dict)
+
+                server_type = server_config["type"]
+                server_setup = select_server(server_type)  # Return the server class
+                server = server_setup(
+                    num_clients=config["server_config"]["data_config"]["num_clients"],
+                    model=model,
+                    optimizer=optimizer,
+                    ss_scheduler=None,
+                    data_path=data_path,
+                    model_path=model_path,
+                    server_train_dataloader=server_train_dataloader,
+                    config=config,
+                    idx_val_clients=idx_val_clients,
+                    idx_test_clients=idx_test_clients,
+                )
+                log_run_properties(config)
+
+            except Exception as e:
+                # Be sure the other workers are shut down.
+                server.terminate_workers()
+                raise e
+
+            print_rank("Launching server")
+            server.run()
+            time.sleep(5)
+        else:
+
+            # Instantiate client-processing Worker on remaining threads
+            print_rank("Worker on node {}: process started".format(WORLD_RANK))
+            client_config = config["client_config"]
+            worker = federated.Worker(
+                model=model,
+                data_path=data_path,
+                do_profiling=client_config.get("do_profiling", False),
+                val_clients=val_clients,
+                test_clients=test_clients,
+                val_dataset=val_dataset,
+                test_dataset=test_dataset,
+                config=config,
+            )
+            worker.run()
 
 
 def get(dic, key, else_val):
@@ -205,6 +224,9 @@ def get(dic, key, else_val):
 
 
 if __name__ == "__main__":
+    print_rank(f"Node:{os.environ['SLURMD_NODENAME']}")
+    os.environ["NCCL_SOCKET_IFNAME"] = "en,eth,em,bond"
+    print_rank(f"NCCL_SOCKET_IFNAME:{os.environ['NCCL_SOCKET_IFNAME']}")
     # Parse command-line arguments
     parser = argparse.ArgumentParser()
     parser.add_argument("-config")

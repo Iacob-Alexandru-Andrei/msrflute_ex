@@ -44,22 +44,45 @@ def encode_string(word, string_to_int=True):
         return word_decoded
 
 
+NOT_SLURM = "RANK" in os.environ.keys()
+NOT_SLURM_LOCAL = "LOCAL_RANK" in os.environ.keys()
+HOMOGENEOUS = (
+    "SLURM_NTASKS_PER_NODE" in os.environ.keys()
+    and os.environ["SLURM_NTASKS_PER_NODE"] is not None
+)
+
+node_name = os.environ["SLURMD_NODENAME"]
+
+LOCAL_RANK_LIMIT_MAU = int(os.environ["MAU_SIZE"])
+LOCAL_RANK_LIMIT_NGON = int(os.environ["NGON_SIZE"])
+
+
 def rank():
     """Return rank of node."""
-    return dist.get_rank()
-    """ Return rank of node. """
-    return int(os.environ["RANK"])
+    if NOT_SLURM:
+        return int(os.environ["RANK"])
+    else:
+        technical_rank = int(os.environ["SLURM_PROCID"])
+        if node_name != "mauao" and technical_rank > LOCAL_RANK_LIMIT_MAU:
+            technical_rank -= (
+                int(os.environ["SLURM_NTASKS_PER_NODE"]) - LOCAL_RANK_LIMIT_MAU
+            )
+        return technical_rank
 
 
 def local_rank():
     """Return local rank of node."""
-    return int(os.environ["LOCAL_RANK"])
+    if NOT_SLURM_LOCAL:
+        return int(os.environ["LOCAL_RANK"])
+    elif HOMOGENEOUS:
+        gpus_per_node = int(os.environ["SLURM_NTASKS_PER_NODE"])
+    else:
+        gpus_per_node = int(os.environ["SLURM_NTASKS"])
+    return int(rank() - gpus_per_node * (rank() // gpus_per_node))
 
 
 def size():
     """Returns number of nodes in the distributed group, including server."""
-    return dist.get_world_size()
-    """ Returns number of nodes in the distributed group, including server. """
     return int(os.environ["WORLD_SIZE"])
 
 
@@ -95,6 +118,16 @@ def _recv_gradients(src):
         grads.append(param.detach().cpu())
     torch.cuda.empty_cache()
     return grads
+
+
+import time
+import logging
+
+
+def print_rank(str, loglevel=logging.DEBUG):
+
+    str = "{} : {}".format(time.ctime(), str)
+    logging.log(loglevel, str)
 
 
 def _send(x, dst=0):
@@ -352,14 +385,15 @@ class Server:
         # Update lr + model parameters each round for all workers
         lr, model_params, nround = server_data
         for worker_rank in range(1, size()):
+            print_rank(f"Sending to worker: {worker_rank}", loglevel=logging.DEBUG)
             _send(COMMAND_UPDATE, worker_rank)
+            print_rank(f"Sent command to: {worker_rank}", loglevel=logging.DEBUG)
             _send(lr, worker_rank)
+            print_rank(f"Sent lr to: {worker_rank}", loglevel=logging.DEBUG)
             _send_gradients(model_params, worker_rank)
-            print_rank(
-                f"Finished sending lr {lr} and n_params {len(model_params)} to worker {worker_rank}",
-                loglevel=logging.DEBUG,
-            )
+            print_rank(f"Sent grads to: {worker_rank}", loglevel=logging.DEBUG)
             _send(float(nround), worker_rank)
+            print_rank(f"Sent nround to: {worker_rank}", loglevel=logging.DEBUG)
             print_rank(
                 f"Finished sending lr {lr} and n_params {len(model_params)} to worker {worker_rank} - round {nround}",
                 loglevel=logging.DEBUG,
@@ -380,7 +414,8 @@ class Server:
             index = len(client_queue) - 1
             client_to_process = client_queue.pop(index)
             print_rank(
-                f"Sending client {index} to worker {node}", loglevel=logging.DEBUG
+                f"Sending client {client_to_process} with index {index} to worker {node}",
+                loglevel=logging.DEBUG,
             )
             _send(
                 command, node
@@ -528,7 +563,6 @@ class Worker:
 
             # Initialize tensors -- required by torch.distributed
             command, client_idx, mode = 0, 0, 0  # int
-            lr = torch.zeros(1)  # float
             lr, nround = torch.zeros(1), torch.zeros(1)  # float
 
             # Read command
@@ -542,12 +576,6 @@ class Worker:
                 print_rank(f"COMMMAND_UPDATE received {rank()}", loglevel=logging.DEBUG)
                 lr = _recv(lr, 0)
                 model_params = _recv_gradients(0)
-                server_data = (lr, model_params)
-                print_rank(
-                    f"Received lr: {lr} and n_params: {len(model_params)}",
-                    loglevel=logging.DEBUG,
-                )
-
                 nround = _recv(nround, 0)
                 server_data = (lr, model_params, int(nround))
                 print_rank(

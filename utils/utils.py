@@ -371,7 +371,7 @@ def init_logging(log_dir, loglevel=logging.DEBUG):
 
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, "log.out")
-    logging.basicConfig(filename=log_file, level=loglevel)
+    logging.basicConfig(filename=log_file, level=loglevel, force=True)
     handler = logging.StreamHandler(stream=sys.stdout)
     logging.getLogger().addHandler(handler)
 

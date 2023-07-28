@@ -13,7 +13,7 @@ import torch.nn as nn
 import numpy as np
 import logging
 
-logging.basicConfig(format='%(levelname)s - %(message)s', level=logging.DEBUG)
+# logging.basicConfig(format='%(levelname)s - %(message)s', level=logging.DEBUG)
 
 __all__ = [
     'VGG', 'vgg11', 'vgg11_bn', 'vgg13', 'vgg13_bn', 'vgg16', 'vgg16_bn',

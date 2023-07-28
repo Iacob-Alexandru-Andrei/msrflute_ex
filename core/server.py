@@ -322,6 +322,7 @@ class OptimizationServer(federated.Server):
                 print_rank("Client learning rate {}".format(initial_lr))
 
                 # Run training on clients
+
                 self.worker_trainer.model.zero_grad()
                 self.train_loss = []
 
@@ -349,6 +350,7 @@ class OptimizationServer(federated.Server):
                 else:
                     num_clients_curr_iter = self.num_clients_per_iteration[0]
                 log_metric("Clients for round", num_clients_curr_iter)
+                print_rank(f"Clients for round {num_clients_curr_iter}")
 
                 # Perform annealing in quantization threshold
                 if self.quant_thresh is not None:
@@ -643,7 +645,8 @@ class OptimizationServer(federated.Server):
                 # Log all the metrics
                 for k in metrics_payload:
                     run.log(k, metrics_payload[k])
-
+        except Exception as e:
+            print(e)
         finally:  # perform cleanup even if error was raised above
             self.terminate_workers(terminate=(not self.do_clustering))
 
