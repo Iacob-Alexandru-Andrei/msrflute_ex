@@ -4,7 +4,7 @@
 import logging
 import os
 import re
-import copy 
+import copy
 
 import random
 import numpy as np
@@ -14,18 +14,20 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from core.metrics import Metrics
-from utils import \
-    get_lr, \
-    get_lr_all, \
-    make_optimizer, \
-    make_lr_scheduler, \
-    print_rank, \
-    torch_save, \
-    try_except_save, \
-    write_yaml
-from utils.utils import (
-    to_device, 
-    get_label_VAT)
+from utils import (
+    get_lr,
+    get_lr_all,
+    make_optimizer,
+    make_lr_scheduler,
+    print_rank,
+    torch_save,
+    try_except_save,
+    write_yaml,
+)
+from . import federated
+from utils.utils import to_device, get_label_VAT
+import time
+
 
 class TrainerBase:
     """Abstract class defining Trainer objects' common interface.
@@ -52,7 +54,7 @@ class TrainerBase:
         max_grad_norm=None,
         ignore_subtask=True,
         model_type="LanguageModel",
-        decoder_config=None
+        decoder_config=None,
     ):
 
         self.model = model
@@ -63,11 +65,16 @@ class TrainerBase:
         self.decoder_config = decoder_config
 
         self.step = 0  # count how many batches are processed
-        self.ignore_subtask = ignore_subtask  # ignore subtasks even if there are multiple task branches
+        self.ignore_subtask = (
+            ignore_subtask  # ignore subtasks even if there are multiple task branches
+        )
 
     def epoch_boundary(self):
-        '''Check if we are at the end of any given epoch.'''
-        return self.step % len(self.train_dataloader.create_loader()) == 0 and self.step != 0
+        """Check if we are at the end of any given epoch."""
+        return (
+            self.step % len(self.train_dataloader.create_loader()) == 0
+            and self.step != 0
+        )
 
     def train_desired_samples(self, desired_max_samples, apply_privacy_metrics):
         pass
@@ -108,7 +115,7 @@ class ModelUpdater(TrainerBase):
         max_grad_norm,
         anneal_config,
         model_type="LanguageModel",
-        decoder_config=None
+        decoder_config=None,
     ):
         super().__init__(
             model=model,
@@ -116,11 +123,13 @@ class ModelUpdater(TrainerBase):
             optimizer=optimizer,
             max_grad_norm=max_grad_norm,
             model_type=model_type,
-            decoder_config=decoder_config
+            decoder_config=decoder_config,
         )
 
         self.val_dataloader = val_dataloader
-        self.annealing_type = anneal_config["type"] if anneal_config is not None else None
+        self.annealing_type = (
+            anneal_config["type"] if anneal_config is not None else None
+        )
         self.lr_scheduler = make_lr_scheduler(anneal_config, self.optimizer)
         self.ss_scheduler = ss_scheduler
 
@@ -129,8 +138,13 @@ class ModelUpdater(TrainerBase):
 
         # Apply gradient clipping
         if self.max_grad_norm is not None:
-            grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-            print_rank(f"clipped norm: {grad_norm} to {min(grad_norm,self.max_grad_norm)}", logging.DEBUG)
+            grad_norm = nn.utils.clip_grad_norm_(
+                self.model.parameters(), self.max_grad_norm
+            )
+            print_rank(
+                f"clipped norm: {grad_norm} to {min(grad_norm,self.max_grad_norm)}",
+                logging.DEBUG,
+            )
 
         # Do optimizer step
         self.optimizer.step()
@@ -141,16 +155,25 @@ class ModelUpdater(TrainerBase):
 
         val_loss = val_acc = None
         if force_run_val is True or self.annealing_type == "val_loss":
-            _, val_loss, val_acc = run_validation_generic(self.model, self.val_dataloader)
+            _, val_loss, val_acc = run_validation_generic(
+                self.model, self.val_dataloader
+            )
 
         # Do LR scheduling
-        print_rank(f"LR all: {list(get_lr_all(self.optimizer))}", loglevel=logging.DEBUG)
+        print_rank(
+            f"LR all: {list(get_lr_all(self.optimizer))}", loglevel=logging.DEBUG
+        )
         print_rank("LR BEFORE lr_scheduler step: {}".format(get_lr(self.optimizer)))
-        if self.annealing_type == "val_loss":
+        if self.lr_scheduler is None:
+            pass
+        elif self.annealing_type == "val_loss":
             self.lr_scheduler.step(val_loss)
         else:
             self.lr_scheduler.step()
-        print_rank("LR AFTER lr_scheduler step: {}".format(get_lr(self.optimizer)), loglevel=logging.DEBUG)
+        print_rank(
+            "LR AFTER lr_scheduler step: {}".format(get_lr(self.optimizer)),
+            loglevel=logging.DEBUG,
+        )
 
         return (val_loss, val_acc)
 
@@ -170,7 +193,7 @@ class ModelUpdater(TrainerBase):
             optimizer=self.optimizer,
             lr_scheduler=self.lr_scheduler,
             ss_scheduler=self.ss_scheduler,
-            token=token
+            token=token,
         )
 
     def load(self, save_path, update_lr_scheduler, update_ss_scheduler):
@@ -189,11 +212,19 @@ class ModelUpdater(TrainerBase):
                 self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
             anl_st_dict = checkpoint.get("lr_scheduler_state_dict")
-            if anl_st_dict and self.lr_scheduler is not None and update_lr_scheduler is True:
+            if (
+                anl_st_dict
+                and self.lr_scheduler is not None
+                and update_lr_scheduler is True
+            ):
                 self.lr_scheduler.load_state_dict(anl_st_dict)
 
             sss_st_dict = checkpoint.get("ss_scheduler_state_dict")
-            if sss_st_dict and self.ss_scheduler is not None and update_lr_scheduler is True:
+            if (
+                sss_st_dict
+                and self.ss_scheduler is not None
+                and update_lr_scheduler is True
+            ):
                 self.ss_scheduler.load_state_dict(sss_st_dict)
 
 
@@ -230,32 +261,36 @@ class Trainer(TrainerBase):
         max_grad_norm=None,
         anneal_config=None,
         num_skips_threshold=-1,
-        ignore_subtask=True
+        ignore_subtask=True,
     ):
         super().__init__(
             model=model,
             train_dataloader=train_dataloader,
             optimizer=optimizer,
             max_grad_norm=max_grad_norm,
-            ignore_subtask=ignore_subtask
+            ignore_subtask=ignore_subtask,
         )
 
-        self.server_replay_config=None
+        self.server_replay_config = None
         if server_replay_config is not None:
             self.server_replay_config = server_replay_config
 
-        self.anneal_config=None
+        self.anneal_config = None
         if anneal_config is not None:
             self.anneal_config = anneal_config
 
         self.lr_scheduler = None
-        if self.optimizer is None and self.server_replay_config is not None and "optimizer" in self.server_replay_config:
-            self.optimizer = make_optimizer(self.server_replay_config["optimizer_config"], model)
+        if (
+            self.optimizer is None
+            and self.server_replay_config is not None
+            and "optimizer" in self.server_replay_config
+        ):
+            self.optimizer = make_optimizer(
+                self.server_replay_config["optimizer_config"], model
+            )
 
         if self.optimizer is not None and self.anneal_config is not None:
-            self.lr_scheduler = make_lr_scheduler(
-                                                self.anneal_config,
-                                                self.optimizer)
+            self.lr_scheduler = make_lr_scheduler(self.anneal_config, self.optimizer)
 
         self.cached_batches = []
         self.ss_scheduler = ss_scheduler
@@ -280,14 +315,16 @@ class Trainer(TrainerBase):
 
             grad = p.grad.detach().clone().cpu().numpy()
             p1 = np.sum(grad)
-            p2 = np.sum(grad ** 2)
+            p2 = np.sum(grad**2)
             n = p.grad.numel()
 
             self.sum_grad += p1
             self.sum_grad2 += p2
             self.counter += n
 
-        print_rank("Magn. Grad. Squared: {}".format(self.sum_grad2), loglevel=logging.DEBUG)
+        print_rank(
+            "Magn. Grad. Squared: {}".format(self.sum_grad2), loglevel=logging.DEBUG
+        )
         print_rank("Magn. Grad.: {}".format(self.sum_grad), loglevel=logging.DEBUG)
         return self.sum_grad, self.sum_grad2, self.counter
 
@@ -308,10 +345,17 @@ class Trainer(TrainerBase):
             "var": var_grad,
             "mean": mean_grad,
             "mag": mag_grad,
-            "norm": norm_grad
+            "norm": norm_grad,
         }
 
-    def train_desired_samples(self, desired_max_samples=None, apply_privacy_metrics=False, algo_payload = None):
+    def train_desired_samples(
+        self,
+        client_id,
+        task,
+        desired_max_samples=None,
+        apply_privacy_metrics=False,
+        algo_payload=None,
+    ):
         """Triggers training step.
 
         Args:
@@ -327,16 +371,30 @@ class Trainer(TrainerBase):
         algo_computation = None
 
         if algo_payload == None:
-            num_samples_per_epoch, train_loss_per_epoch = self.run_train_epoch(desired_max_samples, apply_privacy_metrics)
-        elif algo_payload['algo'] == 'FedLabels':
-            num_samples_per_epoch, train_loss_per_epoch, algo_computation = self.run_train_epoch_sup(desired_max_samples, apply_privacy_metrics, algo_payload)
+            num_samples_per_epoch, train_loss_per_epoch = self.run_train_epoch(
+                client_id, task, desired_max_samples, apply_privacy_metrics
+            )
+        elif algo_payload["algo"] == "FedLabels":
+            (
+                num_samples_per_epoch,
+                train_loss_per_epoch,
+                algo_computation,
+            ) = self.run_train_epoch_sup(
+                desired_max_samples, apply_privacy_metrics, algo_payload
+            )
 
         num_samples += num_samples_per_epoch
         total_train_loss += train_loss_per_epoch
 
         return total_train_loss, num_samples, algo_computation
 
-    def run_train_epoch(self, desired_max_samples=None, apply_privacy_metrics=False):
+    def run_train_epoch(
+        self,
+        client_id,
+        task,
+        desired_max_samples=None,
+        apply_privacy_metrics=False,
+    ):
         """Implementation example for training the model.
 
         The training process should stop after the desired number of samples is processed.
@@ -357,6 +415,8 @@ class Trainer(TrainerBase):
         self.model.zero_grad()
 
         train_loader = self.train_dataloader.create_loader()
+        self_batch_cnt = 0
+        client_begin = time.time()
         for batch in train_loader:
             if desired_max_samples is not None and num_samples >= desired_max_samples:
                 break
@@ -379,7 +439,9 @@ class Trainer(TrainerBase):
 
             # Apply gradient clipping
             if self.max_grad_norm is not None:
-                grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                grad_norm = nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.max_grad_norm
+                )
 
             # Sum up the gradient power
             self.estimate_sufficient_stats()
@@ -388,7 +450,10 @@ class Trainer(TrainerBase):
             if self.optimizer is not None:
                 self.optimizer.step()
 
-            print_rank("step: {}, loss: {}".format(self.step, loss.item()), loglevel=logging.DEBUG)
+            print_rank(
+                "step: {}, loss: {}".format(self.step, loss.item()),
+                loglevel=logging.DEBUG,
+            )
 
             # Post-processing in this loop
             # Sum up the loss
@@ -396,7 +461,9 @@ class Trainer(TrainerBase):
 
             # Increment the number of frames processed already
             if "attention_mask" in batch:
-                num_samples += torch.sum(batch["attention_mask"].detach().cpu() == 1).item()
+                num_samples += torch.sum(
+                    batch["attention_mask"].detach().cpu() == 1
+                ).item()
             elif "total_frames" in batch:
                 num_samples += batch["total_frames"]
             else:
@@ -404,14 +471,33 @@ class Trainer(TrainerBase):
 
             # Update the counters
             self.step += 1
+            self_batch_cnt += 1
+
+        client_end = time.time()
+
+        # ====== Saving training time =====
+        # NOTE: `n_batches` and `n_samples` refers to the local dataset of client with id `client_id`
+        filename = os.path.join(".", f"{task}_record_clients.csv")
+        if os.path.exists(filename):
+            with open(filename, "a") as out:
+                out.write(
+                    f"{client_id},{client_end - client_begin},{num_samples},{int(num_samples/20)},{federated.rank()},{federated.local_rank()},{os.environ['SLURMD_NODENAME']}\n"
+                )
+        else:
+            with open(filename, "x") as out:
+                out.write(
+                    f"client_id,training_time,n_samples,n_batches,rank,local_rank,node_name\n{client_id},{client_end - client_begin},{num_samples},{int(num_samples/20)},{federated.rank()},{federated.local_rank()},{os.environ['SLURMD_NODENAME']}\n"
+                )
 
         # Take a step in lr_scheduler
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
 
         return num_samples, sum_train_loss
-    
-    def run_train_epoch_sup(self, desired_max_samples=None, apply_privacy_metrics=False, algo_payload=None):
+
+    def run_train_epoch_sup(
+        self, desired_max_samples=None, apply_privacy_metrics=False, algo_payload=None
+    ):
         """Implementation example for training the model using semisupervision.
 
         Args:
@@ -425,8 +511,8 @@ class Trainer(TrainerBase):
 
         sum_train_loss = 0.0
         num_samples = 0
-        round_ = algo_payload['iter']
-        semisupervision_config = algo_payload['config']
+        round_ = algo_payload["iter"]
+        semisupervision_config = algo_payload["config"]
         self.reset_gradient_power()
 
         # Reset gradient just in case
@@ -440,10 +526,14 @@ class Trainer(TrainerBase):
         loss_func = torch.nn.CrossEntropyLoss()
 
         # Create datasets
-        normal_dataset, unsupdataset, unsupdataset_rand  = algo_payload['data'][0], algo_payload['data'][1], algo_payload['data'][2]
+        normal_dataset, unsupdataset, unsupdataset_rand = (
+            algo_payload["data"][0],
+            algo_payload["data"][1],
+            algo_payload["data"][2],
+        )
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=0.003, momentum=0)
 
-        for i in range(int(semisupervision_config['train_ep'])):
+        for i in range(int(semisupervision_config["train_ep"])):
             sup_train = DataLoader(normal_dataset, batch_size=64, shuffle=True)
             data_sup = iter(sup_train)
             (images, labels) = next(data_sup)
@@ -451,26 +541,34 @@ class Trainer(TrainerBase):
             labels = to_device(labels)
             log_probs = self.model(to_device(images))
             loss = loss_func(log_probs, labels)
-            num_samples+= len(labels)
+            num_samples += len(labels)
             sum_train_loss += loss.item()
             loss.backward()
             self.optimizer.step()
 
         self.estimate_sufficient_stats()
-        self.step += 1 # Update the counters
-        print_rank("step: {}, loss: {}".format(self.step, loss.item()), loglevel=logging.DEBUG)
+        self.step += 1  # Update the counters
+        print_rank(
+            "step: {}, loss: {}".format(self.step, loss.item()), loglevel=logging.DEBUG
+        )
 
         net = copy.deepcopy(initial_net)
-        optimizer = torch.optim.SGD(net.parameters(), lr=semisupervision_config['eta'], momentum=0)
+        optimizer = torch.optim.SGD(
+            net.parameters(), lr=semisupervision_config["eta"], momentum=0
+        )
         total_est_labels = 0
         total_est_ratios = 0
         correct = 0
 
-        if round_ >= semisupervision_config['burnout_round']:
-            for _ in range(int(semisupervision_config['unsuptrain_ep'])):
-                data_idx = random.sample(range(len(unsupdataset)), semisupervision_config['unl_bs']) 
+        if round_ >= semisupervision_config["burnout_round"]:
+            for _ in range(int(semisupervision_config["unsuptrain_ep"])):
+                data_idx = random.sample(
+                    range(len(unsupdataset)), semisupervision_config["unl_bs"]
+                )
                 partitioned = torch.utils.data.Subset(unsupdataset, indices=data_idx)
-                ldr_train = DataLoader(partitioned, batch_size=semisupervision_config['bs'], shuffle=False)
+                ldr_train = DataLoader(
+                    partitioned, batch_size=semisupervision_config["bs"], shuffle=False
+                )
 
                 (images, true_labels) = next(iter(ldr_train))
                 images, true_labels = to_device(images), to_device(true_labels)
@@ -482,52 +580,89 @@ class Trainer(TrainerBase):
                     output_local = initial_net(images).detach()
                     output_server = self.model(images).detach()
 
-                local_logits = nolog_Softmax(output_local/semisupervision_config['temp'])
-                server_logits = nolog_Softmax(output_server / semisupervision_config['temp'])
-                est_labels, est_idx, est_var, est_ratio = get_label_VAT(local_logits, server_logits, semisupervision_config['thre'], semisupervision_config['comp'])
+                local_logits = nolog_Softmax(
+                    output_local / semisupervision_config["temp"]
+                )
+                server_logits = nolog_Softmax(
+                    output_server / semisupervision_config["temp"]
+                )
+                est_labels, est_idx, est_var, est_ratio = get_label_VAT(
+                    local_logits,
+                    server_logits,
+                    semisupervision_config["thre"],
+                    semisupervision_config["comp"],
+                )
                 total_est_labels += len(est_labels)
-                total_est_ratios += est_ratio/semisupervision_config['unsuptrain_ep']
+                total_est_ratios += est_ratio / semisupervision_config["unsuptrain_ep"]
 
                 if len(est_labels) != 0:
-                    partitioned_rand = torch.utils.data.Subset(unsupdataset_rand, indices=data_idx)
-                    ldr_rand_train = DataLoader(partitioned_rand, batch_size=semisupervision_config['bs'], shuffle=False)
+                    partitioned_rand = torch.utils.data.Subset(
+                        unsupdataset_rand, indices=data_idx
+                    )
+                    ldr_rand_train = DataLoader(
+                        partitioned_rand,
+                        batch_size=semisupervision_config["bs"],
+                        shuffle=False,
+                    )
                     (rand_images, _) = next(iter(ldr_rand_train))
                     rand_images = to_device(rand_images)
 
                     correct += ((est_labels == true_labels[est_idx]).sum().item()) / (
-                                len(est_idx) * semisupervision_config['unsuptrain_ep'])
+                        len(est_idx) * semisupervision_config["unsuptrain_ep"]
+                    )
 
-                    lamb_consist = semisupervision_config['vat_consis']
+                    lamb_consist = semisupervision_config["vat_consis"]
                     net.train()
 
-                    output = net(rand_images[est_idx]) if semisupervision_config['uda'] == 1 else net(images[est_idx])
+                    output = (
+                        net(rand_images[est_idx])
+                        if semisupervision_config["uda"] == 1
+                        else net(images[est_idx])
+                    )
                     output_norand = net(images[est_idx])
 
                     # Compute Losses, this should go inside model.py
                     unsup_loss = loss_func(output, est_labels)
-                    kl_point_loss = KL_pointLoss(Softmax(output_norand / semisupervision_config['temp']), Softmax(output_server[est_idx]/semisupervision_config['temp']))
+                    kl_point_loss = KL_pointLoss(
+                        Softmax(output_norand / semisupervision_config["temp"]),
+                        Softmax(
+                            output_server[est_idx] / semisupervision_config["temp"]
+                        ),
+                    )
                     consist_loss = torch.tensor(0.0, requires_grad=True)
                     consist_tmp = torch.tensor(0.0)
 
                     for i in range(len(est_var)):
-                        if torch.argmax(local_logits[est_idx[i]]) == torch.argmax(server_logits[est_idx[i]]):
-                            dummy = kl_point_loss[i]*est_var[i]
+                        if torch.argmax(local_logits[est_idx[i]]) == torch.argmax(
+                            server_logits[est_idx[i]]
+                        ):
+                            dummy = kl_point_loss[i] * est_var[i]
                             consist_tmp += 1
-                            consist_loss = consist_loss+ dummy.sum()
+                            consist_loss = consist_loss + dummy.sum()
 
                     if consist_tmp != torch.tensor(0.0):
-                        consist_loss = consist_loss/consist_tmp
+                        consist_loss = consist_loss / consist_tmp
 
-                    l2_lambda = semisupervision_config['l2_lambda']
+                    l2_lambda = semisupervision_config["l2_lambda"]
                     initial_net.eval()
-                    reg_loss = torch.tensor(0., requires_grad=True)
-                    for p, prev_param in zip(net.parameters(), initial_net.parameters()):
+                    reg_loss = torch.tensor(0.0, requires_grad=True)
+                    for p, prev_param in zip(
+                        net.parameters(), initial_net.parameters()
+                    ):
                         reg_loss = reg_loss + MSELoss(p, prev_param)
 
-                    (semisupervision_config['unsup_lamb']*unsup_loss + lamb_consist*consist_loss+l2_lambda*reg_loss).backward(retain_graph=True)
+                    (
+                        semisupervision_config["unsup_lamb"] * unsup_loss
+                        + lamb_consist * consist_loss
+                        + l2_lambda * reg_loss
+                    ).backward(retain_graph=True)
                     optimizer.step()
 
-        return total_est_labels, sum_train_loss/semisupervision_config['ensize'], net.state_dict()
+        return (
+            total_est_labels,
+            sum_train_loss / semisupervision_config["ensize"],
+            net.state_dict(),
+        )
 
     def get_model(self):
         return copy.deepcopy(self.model)
@@ -539,14 +674,27 @@ class Trainer(TrainerBase):
             self.model.load_state_dict(model.state_dict())
 
             self.lr_scheduler = None
-            if self.optimizer is None and self.server_replay_config is not None and \
-                    "optimizer_config" in self.server_replay_config:
-                print_rank("Creating server-side replay training optimizer", loglevel=logging.DEBUG)
-                self.optimizer = make_optimizer(self.server_replay_config["optimizer_config"], self.model)
+            if (
+                self.optimizer is None
+                and self.server_replay_config is not None
+                and "optimizer_config" in self.server_replay_config
+            ):
+                print_rank(
+                    "Creating server-side replay training optimizer",
+                    loglevel=logging.DEBUG,
+                )
+                self.optimizer = make_optimizer(
+                    self.server_replay_config["optimizer_config"], self.model
+                )
 
             if self.optimizer is not None and self.anneal_config is not None:
-                print_rank("Creating server-side replay-training lr_scheduler", loglevel=logging.DEBUG)
-                self.lr_scheduler = make_lr_scheduler(self.anneal_config, self.optimizer)
+                print_rank(
+                    "Creating server-side replay-training lr_scheduler",
+                    loglevel=logging.DEBUG,
+                )
+                self.lr_scheduler = make_lr_scheduler(
+                    self.anneal_config, self.optimizer
+                )
 
     def reset_optimizer(self, optimizer_state_dict, annealing_config=None):
         """Re-load optimizer."""
@@ -571,7 +719,7 @@ class Trainer(TrainerBase):
             optimizer=self.optimizer,
             lr_scheduler=self.lr_scheduler,
             ss_scheduler=self.ss_scheduler,
-            token=token
+            token=token,
         )
 
     def load(self, save_path, update_lr_scheduler, update_ss_scheduler):
@@ -590,11 +738,19 @@ class Trainer(TrainerBase):
                 self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
             anl_st_dict = checkpoint.get("lr_scheduler_state_dict")
-            if anl_st_dict and self.lr_scheduler is not None and update_lr_scheduler is True:
+            if (
+                anl_st_dict
+                and self.lr_scheduler is not None
+                and update_lr_scheduler is True
+            ):
                 self.lr_scheduler.load_state_dict(anl_st_dict)
 
             sss_st_dict = checkpoint.get("ss_scheduler_state_dict")
-            if sss_st_dict and self.ss_scheduler is not None and update_lr_scheduler is True:
+            if (
+                sss_st_dict
+                and self.ss_scheduler is not None
+                and update_lr_scheduler is True
+            ):
                 self.ss_scheduler.load_state_dict(sss_st_dict)
 
 
@@ -616,22 +772,23 @@ def run_validation_generic(model, val_dataloader):
     # Initialize dataloader etc.
     val_loader = val_dataloader.create_loader()
     print_rank(
-        f"created loader {val_loader.num_workers}, " + \
-        f"users: {len(val_dataloader.dataset.user_list)} " + \
-        f"examples: {sum(val_dataloader.dataset.num_samples)} " + \
-        f"lendata: {len(val_loader)} ",
-        loglevel=logging.DEBUG
+        f"created loader {val_loader.num_workers}, "
+        + f"users: {len(val_dataloader.dataset.user_list)} "
+        + f"examples: {sum(val_dataloader.dataset.num_samples)} "
+        + f"lendata: {len(val_loader)} ",
+        loglevel=logging.DEBUG,
     )
 
     print_rank(
-        f"drop_last: {val_loader.drop_last} " + \
-        f"len_sampler: {len(val_loader._index_sampler)}",
-        loglevel=logging.DEBUG
+        f"drop_last: {val_loader.drop_last} "
+        + f"len_sampler: {len(val_loader._index_sampler)}",
+        loglevel=logging.DEBUG,
     )
 
     print_rank("Loading metrics ...", logging.DEBUG)
     metrics_cl = Metrics()
     return metrics_cl.compute_metrics(dataloader=val_loader, model=model)
+
 
 def set_component_wise_lr(model, optimizer_config, updatable_names):
     """Set zero learning rate for layers in order to freeze the update.
@@ -654,20 +811,27 @@ def set_component_wise_lr(model, optimizer_config, updatable_names):
     for name, params in model.named_parameters():
         if name_matched(name, updatable_names) is True:
             print_rank("updating {} with lr = {}".format(name, optimizer_config["lr"]))
-            parameters.append({"params": params, "lr":optimizer_config["lr"]})
+            parameters.append({"params": params, "lr": optimizer_config["lr"]})
         else:
             print_rank("freezing {}".format(name))
             parameters.append({"params": params, "lr": 0.0})
 
     return parameters
 
-def save_model(model_path, config, model, optimizer, lr_scheduler, ss_scheduler, token=None):
+
+def save_model(
+    model_path, config, model, optimizer, lr_scheduler, ss_scheduler, token=None
+):
     """Save a model as well as training information."""
 
     save_state = {
         "model_state_dict": model.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict() if optimizer is not None else None,
-        "lr_scheduler_state_dict": lr_scheduler.state_dict() if lr_scheduler is not None else None
+        "optimizer_state_dict": optimizer.state_dict()
+        if optimizer is not None
+        else None,
+        "lr_scheduler_state_dict": lr_scheduler.state_dict()
+        if lr_scheduler is not None
+        else None,
     }
     if ss_scheduler is not None:
         save_state["ss_scheduler_state_dict"] = ss_scheduler.state_dict()
@@ -682,5 +846,6 @@ def save_model(model_path, config, model, optimizer, lr_scheduler, ss_scheduler,
 
     # Write out the config to model_dir
     if config is not None:
-        try_except_save(write_yaml, config=config,
-                save_path=os.path.join(model_path, "config.yaml"))
+        try_except_save(
+            write_yaml, config=config, save_path=os.path.join(model_path, "config.yaml")
+        )

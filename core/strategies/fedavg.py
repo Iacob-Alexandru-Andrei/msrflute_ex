@@ -14,44 +14,48 @@ from core.strategies.utils import (
 )
 
 from azureml.core import Run
+
 run = Run.get_context()
 
 
 class FedAvg(BaseStrategy):
-    '''Federated Averaging'''
+    """Federated Averaging"""
 
     def __init__(self, mode, config, model_path=None):
-        '''Federated Averaging strategy.
+        """Federated Averaging strategy.
 
         Args:
             mode (str): which part the instantiated object should play,
                 typically either :code:`client` or :code:`server`.
             config (dict): initial config dict.
             model_path (str): where to find model, needed for debugging only.
-        '''
+        """
 
         super().__init__(mode=mode, config=config, model_path=model_path)
 
-        if mode not in ['client', 'server']:
-            raise ValueError('mode in strategy must be either `client` or `server`')
+        if mode not in ["client", "server"]:
+            raise ValueError("mode in strategy must be either `client` or `server`")
 
         self.config = config
         self.model_path = model_path
         self.mode = mode
 
         # Parse config
-        self.model_config = config['model_config']
-        self.client_config = config['client_config']
-        self.server_config = config['server_config']
+        self.model_config = config["model_config"]
+        self.client_config = config["client_config"]
+        self.server_config = config["server_config"]
 
-        self.dp_config = config.get('dp_config', None)
+        self.dp_config = config.get("dp_config", None)
 
-        if mode == 'client':
-            self.stats_on_smooth_grad = self.client_config.get('stats_on_smooth_grad', False)
-        elif mode == 'server':
-            self.dump_norm_stats = self.config.get('dump_norm_stats', False)
-            self.aggregate_fast = self.server_config.get('fast_aggregation', False)
-
+        if mode == "client":
+            self.stats_on_smooth_grad = self.client_config.get(
+                "stats_on_smooth_grad", False
+            )
+        elif mode == "server":
+            self.dump_norm_stats = self.config.get("dump_norm_stats", False)
+            self.aggregate_fast = self.server_config.get("fast_aggregation", False)
+            if self.aggregate_fast:
+                print_rank("Using fast aggregation")
             self.skip_model_update = False
 
             # Initialize accumulators
@@ -59,17 +63,17 @@ class FedAvg(BaseStrategy):
             self.client_weights = []
 
     def generate_client_payload(self, trainer):
-        '''Generate client payload
+        """Generate client payload
 
         Args:
             trainer (core.Trainer object): trainer on client.
 
         Returns:
             dict containing payloads in some specified format.
-        '''
+        """
 
-        if self.mode != 'client':
-            raise RuntimeError('this method can only be invoked by the client')
+        if self.mode != "client":
+            raise RuntimeError("this method can only be invoked by the client")
 
         # Reset gradient stats and recalculate them on the smooth/pseudo gradient
         if self.stats_on_smooth_grad:
@@ -80,18 +84,26 @@ class FedAvg(BaseStrategy):
         weight = trainer.num_samples
         for n, p in trainer.model.named_parameters():
             p.grad = weight * p.grad
-            if self.model_config.get('freeze_layer', None) and n == self.model_config['freeze_layer']:
-                print_rank('Setting gradient to zero for layer: {}'.format(n), loglevel=logging.INFO)
+            if (
+                self.model_config.get("freeze_layer", None)
+                and n == self.model_config["freeze_layer"]
+            ):
+                print_rank(
+                    "Setting gradient to zero for layer: {}".format(n),
+                    loglevel=logging.INFO,
+                )
                 p.grad.mul_(0)
 
         payload = {}
-        payload['weight'] = weight
-        payload['gradients'] = [p.grad.to(torch.device('cpu')) for p in trainer.model.parameters()]
+        payload["weight"] = weight
+        payload["gradients"] = [
+            p.grad.to(torch.device("cpu")) for p in trainer.model.parameters()
+        ]
 
         return payload
 
     def process_individual_payload(self, worker_trainer, payload):
-        '''Process client payload
+        """Process client payload
 
         Args:
             worker_trainer (core.Trainer object): trainer on server
@@ -101,23 +113,31 @@ class FedAvg(BaseStrategy):
 
         Returns:
             True if processed succesfully, False otherwise.
-        '''
+        """
 
-        if self.mode != 'server':
-            raise RuntimeError('this method can only be invoked by the server')
+        if self.mode != "server":
+            raise RuntimeError("this method can only be invoked by the server")
 
-        if payload['weight'] == 0.0:
+        if payload["weight"] == 0.0:
             return False
 
-        self.client_weights.append(payload['weight'])
+        self.client_weights.append(payload["weight"])
         if self.aggregate_fast:
-            aggregate_gradients_inplace(worker_trainer.model, payload['gradients'])
+            aggregate_gradients_inplace(worker_trainer.model, payload["gradients"])
         else:
-            self.client_parameters_stack.append(payload['gradients'])
+            self.client_parameters_stack.append(payload["gradients"])
         return True
 
-    def combine_payloads(self, worker_trainer, curr_iter, num_clients_curr_iter, total_clients, client_stats, logger=None):
-        '''Combine payloads to update model
+    def combine_payloads(
+        self,
+        worker_trainer,
+        curr_iter,
+        num_clients_curr_iter,
+        total_clients,
+        client_stats,
+        logger=None,
+    ):
+        """Combine payloads to update model
 
         Args:
             worker_trainer (core.Trainer object): trainer on server
@@ -129,16 +149,23 @@ class FedAvg(BaseStrategy):
 
         Returns:
             losses, computed for use with LR scheduler.
-        '''
+        """
 
-        if self.mode != 'server':
-            raise RuntimeError('this method can only be invoked by the server')
+        if self.mode != "server":
+            raise RuntimeError("this method can only be invoked by the server")
 
         # Aggregation step
         if self.dump_norm_stats:
-            cps_copy = [[g.clone().detach() for g in x] for x in self.client_parameters_stack]
-        weight_sum = self._aggregate_gradients(worker_trainer, num_clients_curr_iter, self.client_weights, metric_logger=logger)
-        print_rank('Sum of weights: {}'.format(weight_sum), loglevel=logging.DEBUG)
+            cps_copy = [
+                [g.clone().detach() for g in x] for x in self.client_parameters_stack
+            ]
+        weight_sum = self._aggregate_gradients(
+            worker_trainer,
+            num_clients_curr_iter,
+            self.client_weights,
+            metric_logger=logger,
+        )
+        print_rank("Sum of weights: {}".format(weight_sum), loglevel=logging.DEBUG)
 
         torch.cuda.empty_cache()
 
@@ -147,26 +174,33 @@ class FedAvg(BaseStrategy):
             p.grad /= weight_sum
 
         if self.dump_norm_stats:
-            cosines = compute_grad_cosines(cps_copy, [p.grad.clone().detach() for p in worker_trainer.model.parameters()])
-            with open(os.path.join(self.model_path, 'cosines.txt'), 'a', encoding='utf-8') as outfile:
-                outfile.write('{}\n'.format(json.dumps(cosines)))
+            cosines = compute_grad_cosines(
+                cps_copy,
+                [p.grad.clone().detach() for p in worker_trainer.model.parameters()],
+            )
+            with open(
+                os.path.join(self.model_path, "cosines.txt"), "a", encoding="utf-8"
+            ) as outfile:
+                outfile.write("{}\n".format(json.dumps(cosines)))
 
         if self.skip_model_update is True:
-            print_rank('Skipping model update')
+            print_rank("Skipping model update")
             return
 
         # Run optimization with gradient/model aggregated from clients
-        print_rank('Updating model')
+        print_rank("Updating model")
         worker_trainer.update_model()
-        print_rank('Updating learning rate scheduler')
+        print_rank("Updating learning rate scheduler")
         losses = worker_trainer.run_lr_scheduler(force_run_val=False)
 
         # TODO: Global DP. See dga.py
 
         return losses
 
-    def _aggregate_gradients(self, worker_trainer, num_clients_curr_iter, client_weights, metric_logger=None):
-        '''Go through stored gradients, aggregate and put them inside model.
+    def _aggregate_gradients(
+        self, worker_trainer, num_clients_curr_iter, client_weights, metric_logger=None
+    ):
+        """Go through stored gradients, aggregate and put them inside model.
 
         Args:
             num_clients_curr_iter (int): how many clients were processed.
@@ -176,7 +210,7 @@ class FedAvg(BaseStrategy):
 
         Returns:
             float: sum of weights for all clients.
-        '''
+        """
 
         if metric_logger is None:
             metric_logger = run.log
