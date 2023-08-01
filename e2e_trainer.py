@@ -97,34 +97,43 @@ def run_worker(model_path, config, task, data_path, local_rank, backend):
     else:
         LOCAL_RANK_LIMIT = int(os.environ["NGON_SIZE"])
     print_rank(f"Backend: {backend}")
-    dist.init_process_group(
-        backend=backend, init_method=None, rank=WORLD_RANK, world_size=federated.size()
-    )
-
-    # Assign NCCL thread to a specific GPU
-    if torch.cuda.is_available():
-        print_rank(f"Assigning worker to GPU {LOCAL_RANK}")
-        device = torch.device("cuda:{}".format(LOCAL_RANK))
-        torch.cuda.set_device(device)
-
-    # Make the Model to distribute to workers
-    model = make_model(model_config)
-
-    # Get evaluation datasets
-    val_dataset = get_dataset(data_path, config, task, mode="val", test_only=True)
-    test_dataset = get_dataset(data_path, config, task, mode="test", test_only=True)
-
-    # Create list of clients for test/val -- Server need the indexes and Worker the clients list
-    val_clients = list(make_eval_clients(val_dataset, config))
-    test_clients = list(make_eval_clients(test_dataset, config))
-
-    # pre-cache the training data and capture the number of clients for sampling
-    num_clients = Client.get_train_dataset(data_path, config, task)
-    config["server_config"]["data_config"]["num_clients"] = num_clients
+    print_rank(f"WORLD_RANK: {WORLD_RANK}")
+    print_rank(f"LOCAL_RANK: {LOCAL_RANK}")
+    print_rank(f"NODE_NAME: {node_name}")
+    print_rank(f"LOCAL_RANK_LIMIT: {LOCAL_RANK_LIMIT}")
 
     # Instantiate the Server object on the first thread
     if WORLD_RANK < federated.size() and LOCAL_RANK < LOCAL_RANK_LIMIT:
         print_rank("Passed")
+
+        # Assign NCCL thread to a specific GPU
+        if torch.cuda.is_available():
+            print_rank(f"Assigning worker to GPU {LOCAL_RANK}")
+            device = torch.device("cuda:{}".format(LOCAL_RANK))
+            torch.cuda.set_device(device)
+
+        # Make the Model to distribute to workers
+        model = make_model(model_config)
+
+        # Get evaluation datasets
+        val_dataset = get_dataset(data_path, config, task, mode="val", test_only=True)
+        test_dataset = get_dataset(data_path, config, task, mode="test", test_only=True)
+
+        # Create list of clients for test/val -- Server need the indexes and Worker the clients list
+        val_clients = list(make_eval_clients(val_dataset, config))
+        test_clients = list(make_eval_clients(test_dataset, config))
+
+        # pre-cache the training data and capture the number of clients for sampling
+        num_clients = Client.get_train_dataset(data_path, config, task)
+        config["server_config"]["data_config"]["num_clients"] = num_clients
+
+        dist.init_process_group(
+            backend=backend,
+            init_method=None,
+            rank=WORLD_RANK,
+            world_size=federated.size(),
+        )
+
         if WORLD_RANK == 0:
             single_worker = None
             if federated.size() == 1:
